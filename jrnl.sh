@@ -2,7 +2,7 @@
 # Small Markdown journal; compatible with the Bash shipped with macOS.
 set -euo pipefail
 
-VERSION=1.0.0
+VERSION=0.0.1a
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
 error() { printf 'jrnl: %s\n' "$*" >&2; exit 1; }
