@@ -2,7 +2,7 @@
 
 ## 2026-09-26 — 0.1.1a
 
-Branch: `codex/stable-install-locks`.
+Branch: `fix/stable-install-locks`.
 
 - Replaced repo-dependent setup with copied user-local executable and zsh integration; added a repeatable installer and non-mutating dry-run.
 - Preserved managed-block position, backups and literal zsh input; unchanged setup no longer rewrites configuration or its backup.
