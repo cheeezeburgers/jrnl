@@ -1,0 +1,41 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Helpers
+*.tape
+
+# Temporary files
+*.swp
+*.swo
+*~
+*.tmp
+
+# Logs
+*.log
+
+# .md
+TODO*.md
+AGENTS*.md
+CODEX*.md
+
+# Secrets / local environment
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.secret
+secrets/
+
+# Machine-specific local files
+*.local
+.local/
+
+# Never commit local Ollama data/models
+.ollama/
