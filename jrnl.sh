@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Small Markdown journal; compatible with the Bash shipped with macOS.
+# jrnl: installed command
 set -euo pipefail
 
-VERSION=0.0.1a
+VERSION=0.1.1a
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+SCRIPT_FILE=$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")
+INSTALLED_COMMAND=$HOME/.local/bin/jrnl
+INSTALLED_INTEGRATION=$HOME/.local/share/jrnl/jrnl.zsh
 
 error() { printf 'jrnl: %s\n' "$*" >&2; exit 1; }
 
@@ -16,13 +20,14 @@ Write a timestamped entry to a Markdown journal, newest first.
 
   -h, --help     Show this help
   -V, --version  Show the version
-  --setup        Choose a journal and configure ~/.zshrc (or $ZDOTDIR/.zshrc)
+  --setup        Install jrnl, choose a journal and configure .zshrc
   --check        Show the configured journal path
   -o, --open     Open the journal in the default application
   --cat          Print the journal using cat
   --             Treat the following text as an entry, including flags
 
-First run: bash jrnl.sh --setup, then source your .zshrc.
+First run: ./install.sh, then ~/.local/bin/jrnl --setup and source your .zshrc.
+Setup uses ~/.zshrc (or $ZDOTDIR/.zshrc) and stable files under ~/.local.
 With the zsh integration, type jrnl followed by literal text without quotes.
 In other shells or scripts, quote shell punctuation: jrnl 'Why <this>?'
 HELP
@@ -63,47 +68,145 @@ ensure_file() {
 # An interrupted write leaves the original file intact.
 cleanup() {
     [[ -z "${temp_file:-}" ]] || rm -f -- "$temp_file"
-    [[ -z "${lock_dir:-}" ]] || rmdir -- "$lock_dir"
+    if [[ -n "${lock_dir:-}" ]]; then
+        rmdir -- "$lock_dir/$$" 2>/dev/null || :
+        rmdir -- "$lock_dir" 2>/dev/null || :
+    fi
+    temp_file=
+    lock_dir=
     return 0
 }
 
 lock_file() {
-    local target=$1
+    local target=$1 candidate=$1.lock owner
+    local -a owners
     temp_file=
     lock_dir=
-    mkdir -- "$target.lock" 2>/dev/null || error "File is busy or its directory is not writable: $target (lock: $target.lock)"
-    lock_dir=$target.lock
+    if ! mkdir -- "$candidate" 2>/dev/null; then
+        # An empty PID directory is both the owner record and the recovery claim.
+        # Only one recovering process can remove it; a loser must not remove
+        # the outer lock, which might already belong to a new writer.
+        owners=("$candidate"/[1-9]*)
+        owner=${owners[0]##*/}
+        [[ ! -L "$candidate" && ${#owners[@]} == 1 && "$owner" =~ ^[1-9][0-9]*$ &&
+           -d "${owners[0]}" && ! -L "${owners[0]}" ]] ||
+            error "Cannot acquire lock: $candidate (owner unknown). Check for active jrnl processes before removing this lock manually."
+        if kill -0 "$owner" 2>/dev/null || ps -p "$owner" >/dev/null 2>&1; then
+            error "File is busy: $target (lock owner PID $owner)"
+        fi
+        if ! rmdir -- "$candidate/$owner" 2>/dev/null ||
+           ! rmdir -- "$candidate" 2>/dev/null ||
+           ! mkdir -- "$candidate" 2>/dev/null; then
+            error "Cannot acquire lock: $candidate; retry the command."
+        fi
+    fi
+    lock_dir=$candidate
     trap cleanup EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
     trap 'exit 143' TERM
+    mkdir -- "$lock_dir/$$" || error "Cannot record lock owner: $lock_dir"
 }
 
-save_config() (
-    local rc=$1
+# Install actual copies, never symlinks into the checkout. Shared by --setup and
+# install.sh so invoking setup directly still produces a complete installation.
+install_copy() {
+    local source=$1 destination=$2 mode=$3
+    [[ ! "$source" -ef "$destination" ]] || return 0
+    lock_file "$destination"
+    temp_file=$(mktemp "$destination.tmp.XXXXXX") || error "Cannot create temporary installation: $destination"
+    cp -- "$source" "$temp_file"
+    chmod "$mode" "$temp_file"
+    mv -f -- "$temp_file" "$destination"
+    temp_file=
+    cleanup
+}
+
+install_files() {
+    local dry_run=${1:-0} integration=$SCRIPT_DIR/jrnl.zsh destination marker found dependency
+    if [[ "$SCRIPT_FILE" -ef "$INSTALLED_COMMAND" ]]; then
+        integration=$INSTALLED_INTEGRATION
+    fi
+    [[ -r "$SCRIPT_FILE" && -r "$integration" ]] || error 'Missing installation files; run ./install.sh from a complete checkout.'
+    for dependency in bash zsh awk cat cp chmod cmp date dirname basename grep mkdir mktemp mv ps readlink rm rmdir uname; do
+        command -v "$dependency" >/dev/null 2>&1 || error "Required command not found: $dependency"
+    done
+    # Refuse to replace an unrelated command, symlink, or directory.
+    for destination in "$INSTALLED_COMMAND" "$INSTALLED_INTEGRATION"; do
+        marker='# jrnl: installed command'
+        [[ "$destination" != "$INSTALLED_INTEGRATION" ]] || marker='# Loaded by the managed jrnl block in .zshrc.'
+        if [[ -e "$destination" || -L "$destination" ]]; then
+            if [[ ! -f "$destination" || -L "$destination" ]] || ! grep -Fxq -- "$marker" "$destination"; then
+                error "Refusing to replace unrelated file: $destination"
+            fi
+        fi
+    done
+    found=$(command -v jrnl || :)
+    if [[ -n "$found" && "$found" != "$INSTALLED_COMMAND" ]]; then
+        printf '[ ! ] Another jrnl command is on PATH: %s. Use %s explicitly.\n' "$found" "$INSTALLED_COMMAND" >&2
+    fi
+    if (( dry_run )); then
+        printf '[DRY] Would install %s and %s\n[DRY] No changes made.\n' "$INSTALLED_COMMAND" "$INSTALLED_INTEGRATION"
+        return
+    fi
+    mkdir -p -- "$(dirname -- "$INSTALLED_COMMAND")" "$(dirname -- "$INSTALLED_INTEGRATION")"
+    install_copy "$integration" "$INSTALLED_INTEGRATION" 644
+    install_copy "$SCRIPT_FILE" "$INSTALLED_COMMAND" 755
+    printf '[ OK ] jrnl %s installed: %s\n' "$VERSION" "$INSTALLED_COMMAND"
+    case ":$PATH:" in
+        *:"$HOME/.local/bin":*) ;;
+        *) printf '[ ! ] ~/.local/bin is not on PATH; --setup adds it to the managed zsh block.\n' ;;
+    esac
+}
+
+save_config() {
+    local rc=$1 block
     lock_file "$rc"
     temp_file=$(mktemp "$rc.jrnl.XXXXXX") || error "Cannot create temporary configuration"
+    block=$(
+        printf '# >>> jrnl >>>\n'
+        printf 'export JRNL_FILE=%q\n' "$JRNL_FILE"
+        # shellcheck disable=SC2016 # Expanded when zsh reads its configuration.
+        printf '%s\n' 'case ":$PATH:" in
+    *:"$HOME/.local/bin":*) ;;
+    *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac'
+        printf 'source %q\n' "$INSTALLED_INTEGRATION"
+        printf '# <<< jrnl <<<\n'
+    )
     if [[ -e "$rc" ]]; then
         [[ -f "$rc" && -r "$rc" && -w "$rc" ]] || error "Cannot update $rc"
         cp -p -- "$rc" "$temp_file"
+        # Replace the block in place, preserving configuration on either side.
         # Refuse malformed markers rather than dropping unrelated configuration.
-        awk '
-            $0 == "# >>> jrnl >>>" { if (inside) exit 2; inside = 1; next }
+        JRNL_BLOCK="$block" awk '
+            $0 == "# >>> jrnl >>>" {
+                if (inside) exit 2
+                inside = 1
+                if (!seen++) print ENVIRON["JRNL_BLOCK"]
+                next
+            }
             $0 == "# <<< jrnl <<<" { if (!inside) exit 2; inside = 0; next }
             !inside { print }
-            END { if (inside) exit 2 }
+            END {
+                if (inside) exit 2
+                if (!seen) { if (NR) print ""; print ENVIRON["JRNL_BLOCK"] }
+            }
         ' "$rc" > "$temp_file" || error "Malformed jrnl block in $rc"
+        if cmp -s -- "$rc" "$temp_file"; then
+            cleanup
+            return
+        fi
+        [[ ! -L "$rc.jrnl.bak" && ( ! -e "$rc.jrnl.bak" || -f "$rc.jrnl.bak" ) ]] ||
+            error "Cannot safely write backup: $rc.jrnl.bak"
         cp -p -- "$rc" "$rc.jrnl.bak"
+    else
+        printf '%s\n' "$block" > "$temp_file"
     fi
-    {
-        printf '\n# >>> jrnl >>>\n'
-        printf 'export JRNL_FILE=%q\n' "$JRNL_FILE"
-        printf 'source %q\n' "$SCRIPT_DIR/jrnl.zsh"
-        printf '# <<< jrnl <<<\n'
-    } >> "$temp_file"
     mv -f -- "$temp_file" "$rc"
     temp_file=
-)
+    cleanup
+}
 
 setup() {
     local chosen default rc
@@ -116,9 +219,9 @@ setup() {
     case "$chosen" in *.md|*.MD) ;; *) chosen=$chosen.md ;; esac
     JRNL_FILE=$(resolve_path "$chosen")
     ensure_file
-    [[ -r "$SCRIPT_DIR/jrnl.zsh" ]] || error "Missing zsh integration: $SCRIPT_DIR/jrnl.zsh"
     rc=$(resolve_path "${ZDOTDIR:-$HOME}/.zshrc")
     [[ "$rc" != "$JRNL_FILE" ]] || error 'The journal and shell configuration must be different files.'
+    install_files
     mkdir -p -- "$(dirname -- "$rc")"
     save_config "$rc"
     printf 'Journal: %s\nConfiguration: %s\n' "$JRNL_FILE" "$rc"
@@ -134,7 +237,7 @@ require_config() {
     fi
 }
 
-write_entry() (
+write_entry() {
     local entry=$1 stamp day time
     ensure_file
     lock_file "$JRNL_FILE"
@@ -165,8 +268,9 @@ write_entry() (
     ' "$JRNL_FILE" > "$temp_file"
     mv -f -- "$temp_file" "$JRNL_FILE"
     temp_file=
+    cleanup
     printf 'Written to %s:\n%s\n' "$JRNL_FILE" "$entry"
-)
+}
 
 main() {
     local action=entry entry
@@ -206,4 +310,7 @@ main() {
     esac
 }
 
-main "$@"
+# install.sh sources the same version and installation helpers.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    main "$@"
+fi

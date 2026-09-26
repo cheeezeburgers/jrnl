@@ -1,10 +1,20 @@
 # Loaded by the managed jrnl block in .zshrc.
-typeset -g JRNL_SCRIPT="${${(%):-%x}:A:h}/jrnl.sh"
+# The legacy wrapper called bash with JRNL_SCRIPT; allow it to migrate when an
+# existing shell reloads .zshrc after installation.
+if (( ${+aliases[jrnl]} )) || {
+    (( ${+functions[jrnl]} )) &&
+    [[ ${functions[jrnl]} != ${_JRNL_WRAPPER:-} &&
+       ${functions[jrnl]} != *'command bash "$JRNL_SCRIPT" "$@"'* ]]
+}; then
+    print -u2 -- 'jrnl: An existing alias or function named jrnl was kept. Remove or rename it, then source this file again to enable literal input.'
+    return 0
+fi
+typeset -g JRNL_SCRIPT="$HOME/.local/bin/jrnl"
 
 jrnl() {
     local result line inside=0 refresh=0
     [[ -z ${JRNL_FILE:-} || ${1:-} == --setup ]] && refresh=1
-    command bash "$JRNL_SCRIPT" "$@"
+    command "$JRNL_SCRIPT" "$@"
     result=$?
     # A child process cannot export into its parent. Read only our generated
     # path assignment after setup, without evaluating shell configuration.
@@ -23,6 +33,7 @@ jrnl() {
     fi
     return $result
 }
+typeset -g _JRNL_WRAPPER=${functions[jrnl]}
 
 # Capture literal text BEFORE zsh interprets redirection, globbing, history
 # expansion or command substitutions. Only standalone jrnl input is changed.

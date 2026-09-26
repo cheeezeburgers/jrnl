@@ -1,17 +1,31 @@
 # jrnl
 
-A tiny Markdown engineering diary. Requires Bash and standard macOS/Linux tools; use interactive zsh for unquoted punctuation.
+A tiny Markdown engineering diary. Version **0.1.1a**. Tested on macOS with its bundled Bash 3.2, zsh and standard command-line tools. Python 3 is only needed for tests.
 
-From this directory, set the journal path (folders and the `.md` file are created):
+## Install
+
+From the checkout, run:
 
 ```sh
-bash jrnl.sh --setup
+./install.sh
+~/.local/bin/jrnl --setup
 source "${ZDOTDIR:-$HOME}/.zshrc"
+```
+
+The installer copies the Bash executable to `~/.local/bin/jrnl` and the zsh integration to `~/.local/share/jrnl/jrnl.zsh`. You can then move or delete the checkout. Re-run `./install.sh` from a new checkout to update; `./install.sh --dry-run` checks and previews installation without changing files. Installation does not download anything or edit shell configuration, and refuses to replace unrelated files.
+
+Setup prompts for a journal path, creates missing folders and the `.md` file, and adds a managed block to `${ZDOTDIR:-$HOME}/.zshrc`. The block exports `JRNL_FILE`, adds `~/.local/bin` to PATH if needed, and sources the installed integration. Existing configuration outside the block is retained; before a change, the previous file is backed up to `.zshrc.jrnl.bak`. Repeating unchanged setup leaves the configuration and backup untouched.
+
+`jrnl --setup` changes the journal path. The previous `bash jrnl.sh --setup` command also installs the files and migrates an existing managed block away from repo paths. If no path is configured, logging an entry prompts for one and then saves that entry.
+
+## Use
+
+In interactive zsh, start a line with `jrnl`; everything after it is literal, including quotes, `$`, pipes and punctuation:
+
+```text
 jrnl Investigated strange network traffic today.
 jrnl Why did <this> happen? {} # [].,
 ```
-
-Setup adds a managed block to `.zshrc`, backing up an existing file to `.zshrc.jrnl.bak`. Keep this project folder in place. Run `jrnl --setup` to change the journal; if no path is configured, jrnl prompts for one and then saves your entry.
 
 ```md
 ## 2026-09-26
@@ -19,18 +33,40 @@ Setup adds a managed block to `.zshrc`, backing up an existing file to `.zshrc.j
 [13:26:21] Investigated strange network traffic today.
 ```
 
-Newest entries appear first within each day; new days appear above older days. Each write prints the saved text and full file path.
+Entries are newest-first within each day, with new days above older days. Each write prints the saved text and full file path. Entries must be a single line.
 
 | Flag | Action |
 | --- | --- |
 | `--help`, `-h` | Show help |
 | `--version`, `-V` | Show version |
-| `--setup` | Set the journal path |
+| `--setup` | Install/configure jrnl and choose the journal path |
 | `--check` | Show the current path |
-| `--open`, `-o` | Open in the default app (`xdg-open` on Linux) |
-| `--cat` | Print the journal with `cat` |
-| `-- TEXT` | Log text beginning with a flag |
+| `--open`, `-o` | Open in the default app |
+| `--cat` | Print the journal |
+| `-- TEXT` | Log text beginning with a flag, e.g. `jrnl -- --help` |
 
-In interactive zsh, start the line with `jrnl`: everything after it is literal, including quotes, `$`, pipes and punctuation. In other shells or scripts, use `bash /path/to/jrnl.sh 'Text with <punctuation>?'` with `JRNL_FILE` exported. Search with `grep -n 'network' "$JRNL_FILE"`.
+The executable also works directly in scripts or other shells: export `JRNL_FILE` and quote shell-sensitive text normally, for example `~/.local/bin/jrnl 'Why <this>?'`. Literal input capture applies only to standalone `jrnl` lines in interactive zsh. Existing `jrnl` aliases or functions are kept with a warning; remove or rename a collision and reload the integration to enable it. Search with `grep -n 'network' "$JRNL_FILE"`.
 
-Checks: `python3 tests/test_jrnl.py` (Python is only needed for tests).
+Writes use a temporary file and atomic replacement. Locks record the owner's PID; a later command recovers a dead owner's lock automatically. Active locks fail with a busy message. Empty legacy locks, incomplete locks or reused live PIDs require manual inspection: stop any active jrnl processes before removing a leftover `<file>.lock` directory. A forced kill may also leave an unused `<file>.tmp.*` file. Journal and setup operations are local; jrnl does not send your entries anywhere.
+
+## Uninstall
+
+Remove only the lines from `# >>> jrnl >>>` through `# <<< jrnl <<<` in your `.zshrc`, then remove the installed files and start a new shell:
+
+```sh
+rm -- "$HOME/.local/bin/jrnl" "$HOME/.local/share/jrnl/jrnl.zsh"
+```
+
+Your journal and `.zshrc.jrnl.bak` remain in place.
+
+## Development
+
+```sh
+python3 tests/test_jrnl.py
+bash -n jrnl.sh
+bash -n install.sh
+zsh -n jrnl.zsh
+shellcheck -x jrnl.sh install.sh
+```
+
+Tests use temporary homes, including installation, repo removal, real interactive zsh, atomic-write failures and stale-lock recovery. ShellCheck is a development dependency only. Linux compatibility work is deferred.
