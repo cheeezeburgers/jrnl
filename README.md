@@ -6,6 +6,8 @@ A tiny engineering diary.
 
 Version **0.1.2a**. Tested on macOS with its bundled Bash 3.2, zsh and standard command-line tools. (Python 3 is only needed for tests).
 
+![jrnl-demo](assets/jrnl-demo.gif)
+
 ## Install
 
 From the checkout, run:

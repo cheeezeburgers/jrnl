@@ -246,10 +246,10 @@ write_success() {
         yellow=$'\033[33m'
         reset=$'\033[0m'
     fi
-    printf '[%s✓%s] [%s%s%s] %s%s%s\n' \
-        "$green" "$reset" "$purple" "$time" "$reset" "$blue" "$entry" "$reset"
-    printf '    was written to %s\n    in %s/\n\n' "${JRNL_FILE##*/}" "${JRNL_FILE%/*}"
-    printf '%s[i] Show all entries with jrnl --show or open with jrnl -o%s\n' "$yellow" "$reset"
+ 	printf '\n[%s✓%s] [%s%s%s] %s%s%s\n' \
+    	"$green" "$reset" "$purple" "$time" "$reset" "$blue" "$entry" "$reset"
+	printf '    was written to %s\n    in %s/\n' "${JRNL_FILE##*/}" "${JRNL_FILE%/*}"
+	printf '%s[i] Show all entries with jrnl --show or open with jrnl -o%s\n' "$yellow" "$reset"
 }
 
 write_entry() {
