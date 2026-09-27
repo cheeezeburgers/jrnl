@@ -23,7 +23,7 @@ Write a timestamped entry to a Markdown journal, newest first.
   --setup        Install jrnl, choose a journal and configure .zshrc
   --check        Show the configured journal path
   -o, --open     Open the journal in the default application
-  --cat          Print the journal using cat
+  --show         Print the journal contents
   --             Treat the following text as an entry, including flags
 
 First run: ./install.sh, then ~/.local/bin/jrnl --setup and source your .zshrc.
@@ -237,6 +237,21 @@ require_config() {
     fi
 }
 
+write_success() {
+    local time=$1 entry=$2 green='' purple='' blue='' yellow='' reset=''
+    if [[ -t 1 && -n ${TERM:-} && ${TERM:-} != dumb && -z ${NO_COLOR:-} ]]; then
+        green=$'\033[32m'
+        purple=$'\033[35m'
+        blue=$'\033[34m'
+        yellow=$'\033[33m'
+        reset=$'\033[0m'
+    fi
+    printf '[%s✓%s] [%s%s%s] %s%s%s\n' \
+        "$green" "$reset" "$purple" "$time" "$reset" "$blue" "$entry" "$reset"
+    printf '    was written to %s\n    in %s/\n\n' "${JRNL_FILE##*/}" "${JRNL_FILE%/*}"
+    printf '%s[i] Show all entries with jrnl --show or open with jrnl -o%s\n' "$yellow" "$reset"
+}
+
 write_entry() {
     local entry=$1 stamp day time
     ensure_file
@@ -244,11 +259,10 @@ write_entry() {
     stamp=$(date '+%Y-%m-%d %H:%M:%S')
     day=${stamp% *}
     time=${stamp#* }
-    entry="[$time] $entry"
     temp_file=$(mktemp "$JRNL_FILE.tmp.XXXXXX") || error 'Cannot create temporary journal.'
     cp -p -- "$JRNL_FILE" "$temp_file"
     # ENVIRON keeps backslashes literal; awk -v would interpret escapes.
-    JRNL_HEADING="## $day" JRNL_ENTRY="$entry" awk '
+    JRNL_HEADING="## $day" JRNL_ENTRY="###### [$time]"$'\n\n'"$entry" awk '
         BEGIN { heading = ENVIRON["JRNL_HEADING"]; entry = ENVIRON["JRNL_ENTRY"] }
         { lines[NR] = $0; if ($0 == heading) found = 1 }
         END {
@@ -258,10 +272,8 @@ write_entry() {
             for (i = 1; i <= NR; i++) {
                 print lines[i]
                 if (lines[i] == heading && !inserted) {
-                    print ""; print entry; inserted = 1
+                    print ""; print entry; print ""; inserted = 1
                     while (i < NR && lines[i + 1] == "") i++
-                    # Keep a blank line between days when an empty section exists.
-                    if (i < NR && lines[i + 1] ~ /^## /) print ""
                 }
             }
         }
@@ -269,7 +281,7 @@ write_entry() {
     mv -f -- "$temp_file" "$JRNL_FILE"
     temp_file=
     cleanup
-    printf 'Written to %s:\n%s\n' "$JRNL_FILE" "$entry"
+    write_success "$time" "$entry"
 }
 
 main() {
@@ -277,7 +289,7 @@ main() {
     if (( $# == 0 )); then help; return; fi
     case "$1" in
         --) shift ;;
-        -h|--help|-V|--version|--setup|--check|-o|--open|--cat)
+        -h|--help|-V|--version|--setup|--check|-o|--open|--show)
             (( $# == 1 )) || error 'Options must be used alone. Use jrnl -- TEXT to log text starting with a flag.'
             action=$1 ;;
         -*) error "Unknown option: $1 (see jrnl --help; use -- to log a leading dash)." ;;
@@ -294,7 +306,7 @@ main() {
     require_config
     case "$action" in
         --check) printf 'Journal: %s\n' "$JRNL_FILE" ;;
-        --cat)
+        --show)
             [[ -f "$JRNL_FILE" ]] || error "Journal does not exist: $JRNL_FILE"
             cat -- "$JRNL_FILE" ;;
         -o|--open)

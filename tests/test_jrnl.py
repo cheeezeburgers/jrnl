@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Integration tests using temporary homes; never changes your shell config."""
+import errno
+import fcntl
 import os
 from pathlib import Path
 import pty
@@ -8,7 +10,9 @@ import select
 import shlex
 import shutil
 import signal
+import struct
 import subprocess
+import termios
 import tempfile
 import time
 import unittest
@@ -21,7 +25,7 @@ class JournalTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="jrnl-test-")
         self.addCleanup(self.tmp.cleanup)
-        self.home = Path(self.tmp.name)
+        self.home = Path(self.tmp.name).resolve()
         self.script = SCRIPT
         self.installed = self.home / ".local/bin/jrnl"
         self.integration = self.home / ".local/share/jrnl/jrnl.zsh"
@@ -29,7 +33,7 @@ class JournalTests(unittest.TestCase):
         self.bin = self.home / "bin"
         self.bin.mkdir()
         self.env = os.environ.copy()
-        for key in ("ZDOTDIR", "BASH_ENV", "ENV", "JRNL_FILE"):
+        for key in ("ZDOTDIR", "BASH_ENV", "ENV", "JRNL_FILE", "NO_COLOR"):
             self.env.pop(key, None)
         self.env.update(HOME=str(self.home), PATH=f"{self.bin}:{os.environ['PATH']}",
                         JRNL_FILE=str(self.log), JRNL_TEST_NOW="2026-09-26 13:26:21")
@@ -71,12 +75,16 @@ class JournalTests(unittest.TestCase):
 
     def test_help_version_and_invalid_input(self):
         for flag in ("-h", "--help"):
-            self.assertIn("Usage:", self.run_jrnl(flag).stdout)
+            help_text = self.run_jrnl(flag).stdout
+            self.assertIn("Usage:", help_text)
+            self.assertIn("--show", help_text)
+            self.assertNotIn("--cat", help_text)
         for flag in ("-V", "--version"):
             self.assertEqual(self.run_jrnl(flag).stdout, "jrnl 0.1.1a\n")
         self.assertIn("Usage:", self.run_jrnl().stdout)
         self.run_jrnl("--typo", ok=False)
-        self.run_jrnl("--cat", "unexpected", ok=False)
+        self.assertIn("Unknown option: --cat", self.run_jrnl("--cat", ok=False).stderr)
+        self.run_jrnl("--show", "unexpected", ok=False)
         self.run_jrnl("--", ok=False)
         self.run_jrnl("   ", ok=False)
         self.run_jrnl("two\nlines", ok=False)
@@ -85,30 +93,141 @@ class JournalTests(unittest.TestCase):
 
     def test_newest_entries_and_days_first(self):
         first = self.run_jrnl("Investigated", "strange network traffic today.")
-        self.assertIn(str(self.log), first.stdout)
+        self.assertIn(self.log.name, first.stdout)
+        self.assertIn(str(self.log.parent) + "/", first.stdout)
         self.assertIn("[13:26:21] Investigated strange network traffic today.", first.stdout)
+        self.assertEqual(self.log.read_text(),
+                         "## 2026-09-26\n\n###### [13:26:21]\n\n"
+                         "Investigated strange network traffic today.\n\n")
         self.env["JRNL_TEST_NOW"] = "2026-09-26 14:00:00"
         self.run_jrnl("Second entry")
+        self.assertEqual(self.log.read_text(),
+                         "## 2026-09-26\n\n###### [14:00:00]\n\nSecond entry\n\n"
+                         "###### [13:26:21]\n\nInvestigated strange network traffic today.\n\n")
         self.env["JRNL_TEST_NOW"] = "2026-09-27 09:00:00"
         self.run_jrnl("Next day")
         self.assertEqual(self.log.read_text(),
-                         "## 2026-09-27\n\n[09:00:00] Next day\n\n"
-                         "## 2026-09-26\n\n[14:00:00] Second entry\n"
-                         "[13:26:21] Investigated strange network traffic today.\n\n")
+                         "## 2026-09-27\n\n###### [09:00:00]\n\nNext day\n\n"
+                         "## 2026-09-26\n\n###### [14:00:00]\n\nSecond entry\n\n"
+                         "###### [13:26:21]\n\nInvestigated strange network traffic today.\n\n")
         self.env["JRNL_TEST_NOW"] = "2026-09-26 15:00:00"
         self.run_jrnl("Back to an existing date")
         self.assertEqual(self.log.read_text().count("## 2026-09-26"), 1)
-        self.assertIn("## 2026-09-26\n\n[15:00:00] Back", self.log.read_text())
+        self.assertIn("## 2026-09-26\n\n###### [15:00:00]\n\nBack", self.log.read_text())
 
-    def test_literal_text_cat_and_check(self):
+    def test_literal_text_show_and_check(self):
         entry = r"Why? <>{}#[] ., %s \\n $HOME $(echo nope) `whoami` & | ; ! café"
         self.run_jrnl(entry)
         self.run_jrnl("--", "--help")
         contents = self.log.read_text()
         self.assertIn(entry, contents)
-        self.assertIn("[13:26:21] --help", contents)
-        self.assertEqual(self.run_jrnl("--cat").stdout, contents)
+        self.assertIn("###### [13:26:21]\n\n--help", contents)
+        self.assertEqual(self.run_jrnl("--show").stdout, contents)
         self.assertIn(str(self.log), self.run_jrnl("--check").stdout)
+
+    def test_task_entry_and_literal_whitespace(self):
+        task = "- [ ] ah now I get it! A `-` at sentence beginning needs a `--` to work and then the desired `-`."
+        self.run_jrnl("--", task)
+        self.assertEqual(self.log.read_text(),
+                         "## 2026-09-26\n\n###### [13:26:21]\n\n" + task + "\n\n")
+        literal = r"  Keep  $foo | \n 'quotes' and \backslashes\  "
+        self.run_jrnl(literal)
+        self.assertEqual(self.log.read_text(),
+                         "## 2026-09-26\n\n###### [13:26:21]\n\n" + literal + "\n\n"
+                         "###### [13:26:21]\n\n" + task + "\n\n")
+
+    def test_old_entries_and_empty_date_sections(self):
+        self.log.parent.mkdir()
+        old = "[08:00:00] Existing  $text \\n remains.\n\n## 2026-09-25\n\nOlder text.\n\n"
+        self.log.write_text("## 2026-09-26\n\n" + old)
+        self.run_jrnl("New entry")
+        self.assertEqual(self.log.read_text(),
+                         "## 2026-09-26\n\n###### [13:26:21]\n\nNew entry\n\n" + old)
+        self.log.write_text("## 2026-09-26\n\n\n## 2026-09-25\n\nOlder text.\n\n")
+        self.run_jrnl("Fill empty day")
+        self.assertEqual(self.log.read_text(),
+                         "## 2026-09-26\n\n###### [13:26:21]\n\nFill empty day\n\n"
+                         "## 2026-09-25\n\nOlder text.\n\n")
+
+    def test_show_missing_journal_and_removed_cat(self):
+        self.assertIn("Journal does not exist", self.run_jrnl("--show", ok=False).stderr)
+        self.assertFalse(self.log.exists())
+        self.run_jrnl("Keep me")
+        before = self.log.read_bytes()
+        self.run_jrnl("--cat", ok=False)
+        self.assertEqual(self.log.read_bytes(), before)
+        self.assertEqual(self.run_jrnl("--show").stdout, before.decode())
+
+    def success_output(self, entry, styled=False):
+        if styled:
+            first = f"[\033[32m✓\033[0m] [\033[35m13:26:21\033[0m] \033[34m{entry}\033[0m\n"
+            hint = "\033[33m[i] Show all entries with jrnl --show or open with jrnl -o\033[0m\n"
+        else:
+            first = f"[✓] [13:26:21] {entry}\n"
+            hint = "[i] Show all entries with jrnl --show or open with jrnl -o\n"
+        return (first + f"    was written to {self.log.name}\n"
+                f"    in {self.log.parent}/\n\n" + hint)
+
+    def test_success_output_and_noninteractive_color(self):
+        self.env["TERM"] = "xterm-256color"
+        entry = r"A literal %s, \n, $foo | and 'quotes'."
+        result = self.run_jrnl(entry)
+        self.assertEqual(result.stdout, self.success_output(entry))
+        self.assertEqual(result.stderr, "")
+        self.assertNotIn("\033", result.stdout)
+        # A relative path and a symlink still report the actual destination.
+        link = self.home / "alias.md"
+        link.symlink_to(self.log)
+        self.env["JRNL_FILE"] = os.path.relpath(link)
+        self.assertEqual(self.run_jrnl(entry).stdout, self.success_output(entry))
+
+    def run_jrnl_tty(self, entry):
+        fd, slave = pty.openpty()
+        process = subprocess.Popen([str(self.script), entry], env=self.env,
+                                   stdin=subprocess.DEVNULL, stdout=slave, stderr=slave)
+        os.close(slave)
+        output = b""
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if not select.select([fd], [], [], 0.1)[0]:
+                    continue
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError as error:
+                    if error.errno != errno.EIO:
+                        raise
+                    break
+                if not chunk:
+                    break
+                output += chunk
+            self.assertEqual(process.wait(timeout=2), 0, output)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=2)
+            os.close(fd)
+        return output.decode().replace("\r\n", "\n")
+
+    def test_terminal_color_boundaries_and_resets(self):
+        for term in ("xterm-256color", "xterm", "ansi"):
+            with self.subTest(term=term):
+                self.env["TERM"] = term
+                entry = "This is a test."
+                self.assertEqual(self.run_jrnl_tty(entry), self.success_output(entry, styled=True))
+
+    def test_terminal_no_color_and_dumb_fallback(self):
+        for term, no_color in (("xterm-256color", "1"), ("xterm", "yes"), ("dumb", ""), (None, "")):
+            with self.subTest(term=term, no_color=no_color):
+                if term is None:
+                    self.env.pop("TERM", None)
+                else:
+                    self.env["TERM"] = term
+                self.env["NO_COLOR"] = no_color
+                entry = "Plain text."
+                output = self.run_jrnl_tty(entry)
+                self.assertEqual(output, self.success_output(entry))
+                self.assertNotIn("\033", output)
 
     def test_setup_preserves_config_and_is_repeatable(self):
         rc = self.home / ".zshrc"
@@ -191,7 +310,7 @@ class JournalTests(unittest.TestCase):
         shutil.rmtree(moved)
         self.run_jrnl("Works after removal")
         self.run_jrnl("--setup", input="\n")
-        for flag in ("-h", "--help", "-V", "--version", "--check", "--cat"):
+        for flag in ("-h", "--help", "-V", "--version", "--check", "--show"):
             self.run_jrnl(flag)
         self.run_jrnl("--", "--help")
         self.mock("open", 'printf "opened: %s\\n" "$1"\n')
@@ -427,69 +546,184 @@ printf '%s\\n' "$JRNL_TEST_NOW"
             self.mock(executable, 'test "$#" -eq 1 || exit 2\nprintf "opened: %s\\n" "$1"\n')
             self.assertEqual(self.run_jrnl(flag).stdout, f"opened: {self.log}\n")
 
+    def start_zsh(self, term="xterm-256color", columns=160, history_options=""):
+        self.run_jrnl("--setup", input="\n")
+        session = ZshSession(self, term, columns)
+        session.send("RPROMPT=''; typeset -gi _jrnl_test_prompt=0; "
+                     'precmd() { (( ++_jrnl_test_prompt )); PS1="JRNL_READY_${_jrnl_test_prompt}> "; }; '
+                     'HISTFILE="$HOME/history"; HISTSIZE=500; SAVEHIST=500; '
+                     + (history_options + '; ' if history_options else '')
+                     + 'bindkey -e; source "$HOME/.zshrc"')
+        return session
+
     @unittest.skipUnless(shutil.which("zsh"), "zsh is needed for interactive integration")
     def test_real_zsh_literal_punctuation_and_history(self):
-        self.run_jrnl("--setup", input="\n")
-        fd, slave = pty.openpty()
-        env = self.env.copy()
-        env.update(TERM="dumb")
-        shell = subprocess.Popen(["zsh", "-dfi"], cwd=self.home, env=env,
-                                 stdin=slave, stdout=slave, stderr=slave,
-                                 start_new_session=True)
-        os.close(slave)
-        def close_shell():
-            shell.terminate()
-            try:
-                shell.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                shell.kill()
-                shell.wait(timeout=2)
-            finally:
-                os.close(fd)
-        self.addCleanup(close_shell)
-        prompt_number = 0
-        def expect_prompt():
-            nonlocal prompt_number
-            prompt_number += 1
-            expected = f"JRNL_READY_{prompt_number}> ".encode()
-            output = b""
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                ready, _, _ = select.select([fd], [], [], 0.1)
-                if ready:
-                    output += os.read(fd, 65536)
-                    if re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", output).endswith(expected):
-                        return output.decode(errors="replace")
-            self.fail("zsh did not return to prompt: " + output.decode(errors="replace"))
-        def send(line):
-            os.write(fd, line.encode() + b"\n")
-            return expect_prompt()
-        # A numbered precmd prompt cannot be confused with ZLE redrawing the
-        # previous prompt before it has actually executed the submitted line.
-        send("RPROMPT=''; typeset -gi _jrnl_test_prompt=0; "
-             'precmd() { (( ++_jrnl_test_prompt )); PS1="JRNL_READY_${_jrnl_test_prompt}> "; }; '
-             "bindkey -e; source " + shlex.quote(str(self.home / ".zshrc")))
-        send('source "$HOME/.zshrc"')
-        entry = "Why? <>{}#[] ., 'quoted' can't $HOME $(touch PWNED) `touch PWNED2` ; & | !"
-        output = send("jrnl " + entry)
-        self.assertIn("[13:26:21] " + entry, self.log.read_text(), output)
+        session = self.start_zsh()
+        session.send('source "$HOME/.zshrc"')
+        entries = [
+            "Why did <this> happen? {} # []., $foo | whatever",
+            "Why? * <>{}#[] ., 'quoted' \"double\" can't $HOME $(touch PWNED) `touch PWNED2` ; & | ! !!",
+            r"Keep  repeated   spaces, \backslashes\ and trailing spaces.  ",
+            "café 日本語 🚀",
+        ]
+        for entry in entries:
+            output = session.send("jrnl " + entry)
+            self.assertIn("###### [13:26:21]\n\n" + entry + "\n\n", self.log.read_text(), output)
+        session.send('fc -ln -4 > "$HOME/recent-history"')
+        self.assertEqual((self.home / "recent-history").read_text().splitlines(),
+                         ["jrnl " + entry for entry in entries])
         self.assertFalse((self.home / "PWNED").exists())
         self.assertFalse((self.home / "PWNED2").exists())
-        os.write(fd, b"\x1b[A\n")
-        expect_prompt()
-        self.assertEqual(self.log.read_text().count(entry), 2)
-        self.assertIn(str(self.log), send("jrnl --check"))
-        send("jrnl -- --help")
-        self.assertIn("[13:26:21] --help", self.log.read_text())
-        self.assertIn("unrelated command", send("print -r -- 'unrelated command'"))
+        entry = entries[1]
+        session.send("jrnl " + entry)
+        output = session.send("\x1b[A")
+        self.assertIn("jrnl " + entry, output)
+        self.assertEqual(self.log.read_text().count(entry), 3)
+        session.send('fc -W')
+        # Read saved history through zsh, which decodes its on-disk format.
+        history = self.zsh('fc -R "$HOME/history"; fc -ln 1').stdout
+        self.assertIn("jrnl café 日本語 🚀\n", history)
+        self.assertIn("jrnl " + entry + "\n", history)
+        self.assertNotIn(r"\jrnl", history)
+        # Unrelated shell syntax still expands and executes normally.
+        output = session.send('print -r -- "normal:$((2 + 3))" | cat')
+        self.assertIn("normal:5", output)
+        session.send('fc -ln -1 > "$HOME/other-history"')
+        self.assertEqual((self.home / "other-history").read_text(),
+                         'print -r -- "normal:$((2 + 3))" | cat\n')
+
+    @unittest.skipUnless(shutil.which("zsh"), "zsh is needed for interactive integration")
+    def test_real_zsh_display_stays_clean(self):
+        for term, columns in (("xterm-256color", 160), ("xterm-256color", 40), ("dumb", 160)):
+            with self.subTest(term=term, columns=columns):
+                session = self.start_zsh(term, columns)
+                entry = "This is the first test."
+                output = session.send("jrnl " + entry)
+                display = output.split("[✓]", 1)[0]
+                self.assertNotIn("\\", display)
+                # A wide terminal leaves the complete typed command on one row.
+                if columns == 160:
+                    self.assertIn("jrnl " + entry, display)
+                self.assertIn("###### [13:26:21]\n\n" + entry, self.log.read_text())
+                session.close()
+
+    @unittest.skipUnless(shutil.which("zsh"), "zsh is needed for interactive integration")
+    def test_real_zsh_flags_and_reconfiguration(self):
+        session = self.start_zsh()
+        self.mock("open", 'test "$#" -eq 1 || exit 2\nprintf "opened: %s\\n" "$1"\n')
+        self.mock("uname", 'printf "Darwin\\n"\n')
+        for flag in ("", "-h", "--help"):
+            self.assertIn("Usage:", session.send("jrnl" + (" " + flag if flag else "")))
+        for flag in ("-V", "--version"):
+            self.assertIn("jrnl 0.1.1a", session.send("jrnl " + flag))
+        self.assertIn(str(self.log), session.send("jrnl --check"))
+        for flag in ("--open", "-o"):
+            self.assertIn(f"opened: {self.log}", session.send("jrnl " + flag))
+        session.send("jrnl -- --help")
+        task = "- [ ] ah now I get it! A `-` at sentence beginning needs a `--` to work and then the desired `-`."
+        session.send("jrnl -- " + task)
+        self.assertIn("###### [13:26:21]\n\n" + task + "\n\n", self.log.read_text())
+        self.assertIn("###### [13:26:21]\n\n--help", self.log.read_text())
+        output = session.send("jrnl --show").replace("\r\n", "\n")
+        self.assertIn(self.log.read_text(), output)
+        before = self.log.read_bytes()
+        for command, error in (("jrnl --cat", "Unknown option"),
+                               ("jrnl --typo", "Unknown option"),
+                               ("jrnl --show unexpected", "Unknown option"),
+                               ("jrnl --", "Entry cannot be empty")):
+            self.assertIn(error, session.send(command))
+            self.assertEqual(self.log.read_bytes(), before)
         # The wrapper imports the new path into this same shell after setup.
-        os.write(fd, b"jrnl --setup\n")
-        time.sleep(0.2)
+        session.write("jrnl --setup\n")
+        session.expect(b"Journal file path [", suffix=False)
         new_log = self.home / "second $journal.md"
-        os.write(fd, str(new_log).encode() + b"\n")
-        expect_prompt()
-        send("jrnl After reconfiguration?")
+        session.send(str(new_log))
+        session.send("jrnl After reconfiguration?")
         self.assertIn("After reconfiguration?", new_log.read_text())
+        self.assertIn(str(new_log), session.send("jrnl --check"))
+        self.assertEqual(self.log.read_bytes(), before)
+
+    @unittest.skipUnless(shutil.which("zsh"), "zsh is needed for interactive integration")
+    def test_real_zsh_keeps_other_hooks_and_multiline_commands(self):
+        session = self.start_zsh()
+        session.send('autoload -Uz add-zsh-hook add-zle-hook-widget; '
+                     'other_history() { print -r -- "$1" >> "$HOME/other-hook"; }; '
+                     'other_finish() { print -r -- ran >> "$HOME/finish-hook"; }; '
+                     'zle -N other_finish; add-zle-hook-widget line-finish other_finish; '
+                     'add-zsh-hook zshaddhistory other_history; source "$HOME/.zshrc"; '
+                     "PS2='CONTINUE> '")
+        session.send('jrnl Hook test $literal | text')
+        before = self.log.read_bytes()
+        output = session.send('print -r -- "other:$((3 + 4))"')
+        self.assertIn("other:7", output)
+        self.assertIn('print -r -- "other:$((3 + 4))"', (self.home / "other-hook").read_text())
+        self.assertEqual((self.home / "finish-hook").read_text(), "ran\nran\n")
+        session.write("print -r -- 'first line\n")
+        session.expect(b"CONTINUE> ")
+        output = session.send("jrnl $HOME | still ordinary quoted text'")
+        self.assertIn("first line\r\njrnl $HOME | still ordinary quoted text", output)
+        self.assertEqual(self.log.read_bytes(), before)
+
+    @unittest.skipUnless(shutil.which("zsh"), "zsh is needed for interactive integration")
+    def test_real_zsh_history_modes_and_ignore_space(self):
+        for options in ("setopt INC_APPEND_HISTORY", "setopt SHARE_HISTORY", "setopt HIST_IGNORE_SPACE"):
+            with self.subTest(options=options):
+                session = self.start_zsh(history_options=options)
+                session.send("jrnl Human readable $text | and punctuation!")
+                session.send(" jrnl Hidden from history")
+                session.send('fc -W')
+                history = (self.home / "history").read_text()
+                self.assertIn("jrnl Human readable $text | and punctuation!\n", history)
+                self.assertNotIn(r"\jrnl", history)
+                if "HIST_IGNORE_SPACE" in options:
+                    self.assertNotIn("jrnl Hidden from history", history)
+                self.assertIn("Hidden from history", self.log.read_text())
+                session.close()
+                (self.home / "history").unlink()
+
+
+class ZshSession:
+    """A real ZLE session with numbered prompts and an isolated test home."""
+
+    def __init__(self, test, term, columns):
+        self.test = test
+        self.fd, slave = pty.openpty()
+        fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, columns, 0, 0))
+        env = dict(test.env, TERM=term, NO_COLOR="1")
+        self.shell = subprocess.Popen(["zsh", "-dfi"], cwd=test.home, env=env,
+                                      stdin=slave, stdout=slave, stderr=slave,
+                                      start_new_session=True)
+        os.close(slave)
+        self.prompt_number = 0
+        test.addCleanup(self.close)
+
+    def close(self):
+        if self.fd is None:
+            return
+        self.shell.kill()
+        self.shell.wait(timeout=2)
+        os.close(self.fd)
+        self.fd = None
+
+    def write(self, text):
+        os.write(self.fd, text.encode())
+
+    def expect(self, expected, suffix=True):
+        output = b""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            ready, _, _ = select.select([self.fd], [], [], 0.1)
+            if ready:
+                output += os.read(self.fd, 65536)
+                plain = re.sub(rb"\x1b\[[0-9;?]*[A-Za-z]", b"", output)
+                if (plain.endswith(expected) if suffix else expected in plain):
+                    return output.decode(errors="replace")
+        self.test.fail("zsh did not produce " + repr(expected) + ": " + repr(output))
+
+    def send(self, line):
+        self.prompt_number += 1
+        self.write(line + "\n")
+        return self.expect(f"JRNL_READY_{self.prompt_number}> ".encode())
 
 
 if __name__ == "__main__":

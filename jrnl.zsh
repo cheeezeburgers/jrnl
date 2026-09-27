@@ -41,22 +41,43 @@ _jrnl_literal_line() {
     emulate -L zsh
     local prefix text MATCH MBEGIN MEND
     local -a match mbegin mend
+    unset _JRNL_HISTORY_LINE _JRNL_EXEC_LINE
     [[ ${CONTEXT:-start} == start ]] || return 0
     if [[ $BUFFER =~ '^([[:blank:]]*)jrnl[[:blank:]]+(.*)$' ]]; then
-        # Escape the command name so recalled history is not quoted twice.
+        # Finish ZLE's display while it still contains the user's original
+        # command. The subsequent execution-only buffer is never redrawn.
+        zle -I
+        typeset -g _JRNL_HISTORY_LINE=$BUFFER
+        # The escaped command name also keeps old escaped history replayable.
         prefix=$match[1]
         text=$match[2]
-        if [[ $text == '-- '* ]]; then
-            text=${text#-- }
+        if [[ $text =~ '^--[[:blank:]](.*)$' ]]; then
+            text=$match[1]
             BUFFER="${prefix}\\jrnl -- ${(q)text}"
         else
             BUFFER="${prefix}\\jrnl ${(q)text}"
         fi
+        typeset -g _JRNL_EXEC_LINE=$BUFFER
     fi
 }
 
+# Use zsh's history-context mechanism to retain the original line and discard
+# only its escaped execution form. zsh restores the normal context afterwards.
+_jrnl_add_history() {
+    local original=${_JRNL_HISTORY_LINE-} executed=${_JRNL_EXEC_LINE-}
+    unset _JRNL_HISTORY_LINE _JRNL_EXEC_LINE
+    if [[ -n $executed && $1 == "$executed"$'\n' ]]; then
+        if [[ ! -o histignorespace || $original != [[:blank:]]* ]]; then
+            print -rs -- "$original"
+        fi
+        fc -p
+    fi
+    return 0
+}
+
 if [[ -o interactive ]]; then
-    autoload -Uz add-zle-hook-widget
+    autoload -Uz add-zle-hook-widget add-zsh-hook
     zle -N _jrnl_literal_line
     add-zle-hook-widget line-finish _jrnl_literal_line
+    add-zsh-hook zshaddhistory _jrnl_add_history
 fi
