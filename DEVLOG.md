@@ -1,6 +1,6 @@
 # Development log
 
-## 2026-09-27 — 0.1.1a
+## 2026-09-27 — 0.1.2a
 
 Branch: `codex/jrnl-display-format`.
 
@@ -8,7 +8,7 @@ Branch: `codex/jrnl-display-format`.
 - Renamed `--cat` to `--show`; added the requested success message, separate basename/directory lines, and terminal-only ANSI colors with `NO_COLOR` support.
 - Kept ZLE capture and escaping. `zle -I` finishes the original display before replacing the execution buffer; a scoped `zshaddhistory` hook uses `print -rs` and `fc -p` to retain readable history without the escaped duplicate. Existing hooks and non-jrnl commands continue working.
 - Expanded coverage to 33 passing tests on macOS (Bash 3.2, zsh 5.9), including exact Markdown/output, real terminal color boundaries, clean display at different widths, readable history and recall, all flags, setup, installation/dry-run, atomic failures and lock recovery. Bash/zsh syntax, ShellCheck and whitespace checks passed.
-- The checkout already used target version `0.1.1a`; retained it without another bump. Linux integration remains deferred. Old entries are not reformatted; literal history replay requires recalling into ZLE, rather than immediate `!!`/`fc -s` execution.
+- Corrected the session target version from `0.1.1a` to `0.1.2a`, including README and test expectations; no tests were rerun for this version-only correction. Linux integration remains deferred. Old entries are not reformatted; literal history replay requires recalling into ZLE, rather than immediate `!!`/`fc -s` execution.
 
 ## 2026-09-26 — 0.1.1a
 

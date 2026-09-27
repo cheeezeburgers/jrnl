@@ -80,7 +80,7 @@ class JournalTests(unittest.TestCase):
             self.assertIn("--show", help_text)
             self.assertNotIn("--cat", help_text)
         for flag in ("-V", "--version"):
-            self.assertEqual(self.run_jrnl(flag).stdout, "jrnl 0.1.1a\n")
+            self.assertEqual(self.run_jrnl(flag).stdout, "jrnl 0.1.2a\n")
         self.assertIn("Usage:", self.run_jrnl().stdout)
         self.run_jrnl("--typo", ok=False)
         self.assertIn("Unknown option: --cat", self.run_jrnl("--cat", ok=False).stderr)
@@ -279,7 +279,7 @@ class JournalTests(unittest.TestCase):
         self.install("--dry-run", "extra", ok=False)
         self.install("--typo", ok=False)
         result = self.install()
-        self.assertIn("jrnl 0.1.1a", result.stdout)
+        self.assertIn("jrnl 0.1.2a", result.stdout)
         self.assertIn("not on PATH", result.stdout)
         self.assertIn(str(self.installed), result.stdout)
         self.assertFalse((self.home / ".zshrc").exists())
@@ -289,7 +289,7 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(self.installed.stat().st_mode & 0o777, 0o755)
         self.assertEqual(self.integration.stat().st_mode & 0o777, 0o644)
         # An older installed copy is safely replaced; dry-run does not replace it.
-        self.installed.write_text(self.installed.read_text().replace("VERSION=0.1.1a", "VERSION=0.0.1a"))
+        self.installed.write_text(self.installed.read_text().replace("VERSION=0.1.2a", "VERSION=0.0.1a"))
         old = self.installed.read_bytes()
         self.install("--dry-run")
         self.assertEqual(self.installed.read_bytes(), old)
@@ -317,7 +317,7 @@ class JournalTests(unittest.TestCase):
         for flag in ("-o", "--open"):
             self.assertIn(str(self.log), self.run_jrnl(flag).stdout)
         result = self.zsh('source "$HOME/.zshrc"; source "$HOME/.zshrc"; jrnl "Via zsh"; command jrnl --version; print -r -- "$PATH"')
-        self.assertIn("jrnl 0.1.1a", result.stdout)
+        self.assertIn("jrnl 0.1.2a", result.stdout)
         self.assertEqual(result.stdout.splitlines()[-1].split(":").count(str(self.installed.parent)), 1)
         self.assertIn("Via zsh", self.log.read_text())
         self.assertNotIn(str(repo), (self.home / ".zshrc").read_text())
@@ -355,7 +355,7 @@ JRNL_SCRIPT=/removed-checkout/jrnl.sh
 source "$HOME/.zshrc"
 jrnl --version
 ''')
-        self.assertEqual(result.stdout, "jrnl 0.1.1a\n")
+        self.assertEqual(result.stdout, "jrnl 0.1.2a\n")
         self.assertEqual(result.stderr, "")
 
     def test_setup_with_shell_sensitive_home_and_journal_paths(self):
@@ -615,7 +615,7 @@ printf '%s\\n' "$JRNL_TEST_NOW"
         for flag in ("", "-h", "--help"):
             self.assertIn("Usage:", session.send("jrnl" + (" " + flag if flag else "")))
         for flag in ("-V", "--version"):
-            self.assertIn("jrnl 0.1.1a", session.send("jrnl " + flag))
+            self.assertIn("jrnl 0.1.2a", session.send("jrnl " + flag))
         self.assertIn(str(self.log), session.send("jrnl --check"))
         for flag in ("--open", "-o"):
             self.assertIn(f"opened: {self.log}", session.send("jrnl " + flag))

@@ -4,7 +4,7 @@ A tiny engineering diary.
 
 ![jrnl-hero-img](assets/jrnl-hero-img.png)
 
-Version **0.1.1a**. Tested on macOS with its bundled Bash 3.2, zsh and standard command-line tools. (Python 3 is only needed for tests).
+Version **0.1.2a**. Tested on macOS with its bundled Bash 3.2, zsh and standard command-line tools. (Python 3 is only needed for tests).
 
 ## Install
 
