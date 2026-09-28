@@ -3,7 +3,7 @@
 # jrnl: installed command
 set -euo pipefail
 
-VERSION=0.2.0a
+VERSION=0.2.1a
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SCRIPT_FILE=$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")
 INSTALLED_COMMAND=$HOME/.local/bin/jrnl
@@ -166,7 +166,7 @@ install_files() {
     install_copy "$integration" "$INSTALLED_INTEGRATION" 644
     install_copy "$selector" "$INSTALLED_SELECTOR" 644
     install_copy "$SCRIPT_FILE" "$INSTALLED_COMMAND" 755
-    printf '[ OK ] jrnl %s installed: %s\n' "$VERSION" "$INSTALLED_COMMAND"
+    printf '\n[ OK ] jrnl %s installed in: %s\n' "$VERSION" "$INSTALLED_COMMAND"
     case ":$PATH:" in
         *:"$HOME/.local/bin":*) ;;
         *) printf '[ ! ] ~/.local/bin is not on PATH; --setup adds it to the managed zsh block.\n' ;;
@@ -238,7 +238,7 @@ choose_journal_path() {
     [[ -f "$selector" && -r "$selector" ]] || error 'Missing setup selector; reinstall from a complete checkout.'
     # shellcheck source=vendor/clack-bash/select.sh
     source "$selector" || error 'Cannot load setup selector; reinstall from a complete checkout.'
-    printf 'Journal location\nDefault: ~/Documents/\n' >&2
+    printf 'Where should your journal live?\n' >&2
     location=$(clack_select 'Location' 1 Home Documents Other) || error 'Setup cancelled.'
     case "$location" in
         Home) location=$HOME ;;
@@ -253,7 +253,7 @@ choose_journal_path() {
     location=$(resolve_path "$location") || return 1
     [[ ! -e "$location" || -d "$location" ]] || error 'Please choose a directory.'
 
-    printf '\nJournal filename\nDefault: jrnl.md\n' >&2
+    printf '\nEnter the name for your jrnl-file:\n' >&2
     filename=$(clack_select 'Filename' 1 journal.md jrnl.md devlog.md Other) || error 'Setup cancelled.'
     if [[ "$filename" == Other ]]; then
         # choose_journal_path runs in a subshell; completion uses the chosen folder.
@@ -287,7 +287,7 @@ setup() {
     install_files
     mkdir -p -- "$(dirname -- "$rc")"
     save_config "$rc"
-    printf 'Journal: %s\nConfiguration: %s\n' "$(display_path "$JRNL_FILE")" "$(display_path "$rc")"
+    printf 'Journal path and file name: %s\nConfiguration saved to: %s\n' "$(display_path "$JRNL_FILE")" "$(display_path "$rc")"
     printf 'To load jrnl in a new shell, run: source %q\n' "${ZDOTDIR:-$HOME}/.zshrc"
 }
 

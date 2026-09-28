@@ -137,7 +137,7 @@ clack_select() (
     case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
         *UTF-8*|*utf8*)
             S_STEP_ACTIVE='◆'; S_STEP_SUBMIT='◇'; S_BAR='│'; S_BAR_END='└'
-            S_RADIO_ACTIVE='●'; S_RADIO_INACTIVE='○' ;;
+            S_RADIO_ACTIVE='❯'; S_RADIO_INACTIVE='' ;;
     esac
     if [[ -t 2 && ${TERM:-dumb} != dumb && -z ${NO_COLOR:-} ]]; then
         C_RESET=$'\033[0m'; C_DIM=$'\033[2m'; C_RED=$'\033[31m'

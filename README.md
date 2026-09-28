@@ -8,39 +8,76 @@ Write down what you just fixed, broke, investigated or want to remember, without
 
 ![jrnl-demo](assets/jrnl-demo.gif)
 
-"jrnl" saves it to a Markdown file with the current date and time.
+`jrnl` saves it to a Markdown file with the current date and time.
 
 > [!NOTE]
-> __Version 0.1.2a__ -- Tested on macOS with Bash 3.2 and zsh.
+> __Version 0.2.1a__ — Tested on macOS with Bash 3.2 and zsh. Linux validation is planned for a later version.
 
 ## Install
+
+### Dry-run
+
+> [!TIP]
+> You can preview the installation without installing anything:
+> ```sh
+> ./install.sh --dry-run
+> ```
+
+### Installation
 
 Clone the repo, then run:
 
 ```sh
 ./install.sh
-jrnl --setup
+~/.local/bin/jrnl --setup
 source "${ZDOTDIR:-$HOME}/.zshrc"
 ```
 
-`jrnl --setup` asks where your journal should live and creates the file and missing folders for you.
-
-The installer puts:
+The installer copies everything `jrnl` needs to stable user-local locations:
 
 ```text
 ~/.local/bin/jrnl
 ~/.local/share/jrnl/jrnl.zsh
+~/.local/share/jrnl/clack-select.sh
 ```
 
-in stable user-local locations, so the cloned repo can be moved or deleted afterwards.
+The setup selector is vendored with `jrnl`, so there is no separate UI dependency to install.
 
-To preview the install without changing anything:
-
-```sh
-./install.sh --dry-run
-```
+### Update
 
 To update later, run `./install.sh` again from a newer checkout.
+
+## Setup
+
+`jrnl --setup` first asks where your journal should live:
+
+```text
+Home
+Documents
+Other
+```
+
+**Documents** is the default.
+
+It then asks for the journal filename:
+
+```text
+journal.md
+jrnl.md
+devlog.md
+Other
+```
+
+**jrnl.md** is the default.
+
+> [!TIP]
+> Accepting both defaults creates `~/Documents/jrnl.md`.
+
+Choosing **Other** lets you enter your own directory or filename. These prompts support normal Tab completion.
+
+If you enter a custom filename without a Markdown suffix, `jrnl` adds `.md` automatically:
+
+Run `jrnl --setup` again whenever you want to move to a different journal.
 
 ## Use
 
@@ -95,10 +132,6 @@ After writing, you get a small confirmation:
 [i] Show all entries with jrnl --show or open with jrnl -o
 ```
 
-The checkmark is green, the timestamp orange, the repeated entry blue and the information line yellow.
-
-Colors are automatically disabled when output is redirected or piped, when the terminal does not support them, or when `NO_COLOR` is set.
-
 ## Commands
 
 | Command | What it does |
@@ -108,7 +141,7 @@ Colors are automatically disabled when output is redirected or piped, when the t
 | `jrnl --show` | Print the complete journal |
 | `jrnl --open`, `jrnl -o` | Open the journal in its default app |
 | `jrnl --check` | Show the configured journal path |
-| `jrnl --setup` | Choose or change the journal path |
+| `jrnl --setup` | Choose or change the journal location and filename |
 | `jrnl --version`, `jrnl -V` | Show the version |
 | `jrnl --help`, `jrnl -h` | Show help |
 
@@ -168,6 +201,8 @@ Your journal is just a Markdown file.
 
 `jrnl` does not send entries anywhere, require an account or download anything while running.
 
+The interactive setup menu is bundled with `jrnl` as a small Bash selector adapted from [clack-bash](https://github.com/ibrahimhajjaj/clack-bash), licensed under MIT. No additional runtime dependency is required.
+
 Writes use a temporary file followed by atomic replacement to avoid leaving a half-written journal behind.
 
 A small PID-based lock prevents two processes from writing the same file at once and can recover locks left behind by dead processes.
@@ -187,6 +222,7 @@ Then remove the installed files:
 ```sh
 rm -- "$HOME/.local/bin/jrnl"
 rm -- "$HOME/.local/share/jrnl/jrnl.zsh"
+rm -- "$HOME/.local/share/jrnl/clack-select.sh"
 ```
 
 Your journal and `.zshrc.jrnl.bak` are left untouched.
@@ -215,4 +251,4 @@ shellcheck -x jrnl.sh install.sh
 
 Python and ShellCheck are development dependencies only.
 
-Linux compatibility is planned for a later version.
+Linux compatibility and validation are planned for a later version.
