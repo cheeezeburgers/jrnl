@@ -1,19 +1,17 @@
 # jrnl
 
-A tiny engineering diary for your terminal.
+__A tiny engineering diary for your terminal.__
 
 ![jrnl-hero-img](assets/jrnl-hero-img.png)
 
-Write down what you just fixed, broke, investigated or want to remember — without leaving the terminal.
-
-jrnl Investigated strange network traffic today.
-
-"jrnl" saves it to a Markdown file with the current date and time.
+Write down what you just fixed, broke, investigated or want to remember, without leaving the terminal.
 
 ![jrnl-demo](assets/jrnl-demo.gif)
 
-Version 0.1.2a.
-Tested on macOS with Bash 3.2 and zsh.
+"jrnl" saves it to a Markdown file with the current date and time.
+
+> [!NOTE]
+> __Version 0.1.2a__ -- Tested on macOS with Bash 3.2 and zsh.
 
 ## Install
 
