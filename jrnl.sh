@@ -3,11 +3,12 @@
 # jrnl: installed command
 set -euo pipefail
 
-VERSION=0.1.2a
+VERSION=0.2.0a
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SCRIPT_FILE=$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")
 INSTALLED_COMMAND=$HOME/.local/bin/jrnl
 INSTALLED_INTEGRATION=$HOME/.local/share/jrnl/jrnl.zsh
+INSTALLED_SELECTOR=$HOME/.local/share/jrnl/clack-select.sh
 
 error() { printf 'jrnl: %s\n' "$*" >&2; exit 1; }
 
@@ -122,19 +123,30 @@ install_copy() {
     cleanup
 }
 
+# Installed setup must never depend on the checkout's vendor directory.
+selector_source() {
+    if [[ "$SCRIPT_FILE" -ef "$INSTALLED_COMMAND" ]]; then
+        printf '%s\n' "$INSTALLED_SELECTOR"
+    else
+        printf '%s\n' "$SCRIPT_DIR/vendor/clack-bash/select.sh"
+    fi
+}
+
 install_files() {
-    local dry_run=${1:-0} integration=$SCRIPT_DIR/jrnl.zsh destination marker found dependency
+    local dry_run=${1:-0} integration=$SCRIPT_DIR/jrnl.zsh destination marker found dependency selector
+    selector=$(selector_source)
     if [[ "$SCRIPT_FILE" -ef "$INSTALLED_COMMAND" ]]; then
         integration=$INSTALLED_INTEGRATION
     fi
-    [[ -r "$SCRIPT_FILE" && -r "$integration" ]] || error 'Missing installation files; run ./install.sh from a complete checkout.'
+    [[ -r "$SCRIPT_FILE" && -r "$integration" && -r "$selector" ]] || error 'Missing installation files; run ./install.sh from a complete checkout.'
     for dependency in bash zsh awk cat cp chmod cmp date dirname basename grep mkdir mktemp mv ps readlink rm rmdir uname; do
         command -v "$dependency" >/dev/null 2>&1 || error "Required command not found: $dependency"
     done
     # Refuse to replace an unrelated command, symlink, or directory.
-    for destination in "$INSTALLED_COMMAND" "$INSTALLED_INTEGRATION"; do
+    for destination in "$INSTALLED_COMMAND" "$INSTALLED_INTEGRATION" "$INSTALLED_SELECTOR"; do
         marker='# jrnl: installed command'
         [[ "$destination" != "$INSTALLED_INTEGRATION" ]] || marker='# Loaded by the managed jrnl block in .zshrc.'
+        [[ "$destination" != "$INSTALLED_SELECTOR" ]] || marker='# jrnl: installed clack-bash selector'
         if [[ -e "$destination" || -L "$destination" ]]; then
             if [[ ! -f "$destination" || -L "$destination" ]] || ! grep -Fxq -- "$marker" "$destination"; then
                 error "Refusing to replace unrelated file: $destination"
@@ -146,11 +158,13 @@ install_files() {
         printf '[ ! ] Another jrnl command is on PATH: %s. Use %s explicitly.\n' "$found" "$INSTALLED_COMMAND" >&2
     fi
     if (( dry_run )); then
-        printf '[DRY] Would install %s and %s\n[DRY] No changes made.\n' "$INSTALLED_COMMAND" "$INSTALLED_INTEGRATION"
+        printf '[DRY] Would install %s\n' "$INSTALLED_COMMAND" "$INSTALLED_INTEGRATION" "$INSTALLED_SELECTOR"
+        printf '[DRY] No changes made.\n'
         return
     fi
     mkdir -p -- "$(dirname -- "$INSTALLED_COMMAND")" "$(dirname -- "$INSTALLED_INTEGRATION")"
     install_copy "$integration" "$INSTALLED_INTEGRATION" 644
+    install_copy "$selector" "$INSTALLED_SELECTOR" 644
     install_copy "$SCRIPT_FILE" "$INSTALLED_COMMAND" 755
     printf '[ OK ] jrnl %s installed: %s\n' "$VERSION" "$INSTALLED_COMMAND"
     case ":$PATH:" in
@@ -208,23 +222,72 @@ esac'
     cleanup
 }
 
+display_path() {
+    # shellcheck disable=SC2088 # Display a literal home abbreviation.
+    case "$1" in
+        "$HOME") printf '~' ;;
+        "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+# Keep input/selection separate from path validation and configuration writes.
+choose_journal_path() {
+    local location filename selector
+    selector=$(selector_source)
+    [[ -f "$selector" && -r "$selector" ]] || error 'Missing setup selector; reinstall from a complete checkout.'
+    # shellcheck source=vendor/clack-bash/select.sh
+    source "$selector" || error 'Cannot load setup selector; reinstall from a complete checkout.'
+    printf 'Journal location\nDefault: ~/Documents/\n' >&2
+    location=$(clack_select 'Location' 1 Home Documents Other) || error 'Setup cancelled.'
+    case "$location" in
+        Home) location=$HOME ;;
+        Documents) location=$HOME/Documents ;;
+        Other)
+            printf 'Directory path: ' >&2
+            IFS= read -e -r location || error 'Setup cancelled: no directory received.' ;;
+        *) error 'Invalid location selection.' ;;
+    esac
+    [[ "$location" == *[![:space:]]* && "$location" != *$'\n'* && "$location" != *$'\r'* ]] ||
+        error 'The directory path must be a nonempty single line.'
+    location=$(resolve_path "$location") || return 1
+    [[ ! -e "$location" || -d "$location" ]] || error 'Please choose a directory.'
+
+    printf '\nJournal filename\nDefault: jrnl.md\n' >&2
+    filename=$(clack_select 'Filename' 1 journal.md jrnl.md devlog.md Other) || error 'Setup cancelled.'
+    if [[ "$filename" == Other ]]; then
+        # choose_journal_path runs in a subshell; completion uses the chosen folder.
+        if [[ -d "$location" ]]; then cd -- "$location" || error "Cannot access directory: $location"; fi
+        printf 'Filename: ' >&2
+        IFS= read -e -r filename || error 'Setup cancelled: no filename received.'
+    fi
+    journal_path "$location" "$filename"
+}
+
+journal_path() {
+    local location=$1 filename=$2 chosen
+    [[ "$filename" == *[![:space:]]* && "$filename" != */* &&
+       "$filename" != . && "$filename" != .. && "$filename" != '~' &&
+       "$filename" != *$'\n'* && "$filename" != *$'\r'* ]] ||
+        error 'Please enter a filename without a directory path.'
+    # Check before and after normalization, including symlinks to directories.
+    [[ ! -d "$location/$filename" ]] || error 'The filename resolves to a directory.'
+    case "$filename" in *.[mM][dD]) ;; *) filename=$filename.md ;; esac
+    chosen=$(resolve_path "${location%/}/$filename") || return 1
+    [[ ! -d "$chosen" ]] || error 'The filename resolves to a directory.'
+    printf '%s\n' "$chosen"
+}
+
 setup() {
-    local chosen default rc
-    default=${JRNL_FILE:-$HOME/journal.md}
-    printf 'Journal file path [%s]: ' "$default" >&2
-    IFS= read -r chosen || error 'Setup cancelled: no path received.'
-    chosen=${chosen:-$default}
-    [[ "$chosen" != *$'\n'* && "$chosen" != *$'\r'* ]] || error 'The path must be a single line.'
-    [[ "$chosen" != */ && ! -d "$chosen" ]] || error 'Please include a Markdown filename, for example ~/notes/journal.md.'
-    case "$chosen" in *.md|*.MD) ;; *) chosen=$chosen.md ;; esac
-    JRNL_FILE=$(resolve_path "$chosen")
+    local rc
+    JRNL_FILE=$(choose_journal_path)
     ensure_file
     rc=$(resolve_path "${ZDOTDIR:-$HOME}/.zshrc")
     [[ "$rc" != "$JRNL_FILE" ]] || error 'The journal and shell configuration must be different files.'
     install_files
     mkdir -p -- "$(dirname -- "$rc")"
     save_config "$rc"
-    printf 'Journal: %s\nConfiguration: %s\n' "$JRNL_FILE" "$rc"
+    printf 'Journal: %s\nConfiguration: %s\n' "$(display_path "$JRNL_FILE")" "$(display_path "$rc")"
     printf 'To load jrnl in a new shell, run: source %q\n' "${ZDOTDIR:-$HOME}/.zshrc"
 }
 

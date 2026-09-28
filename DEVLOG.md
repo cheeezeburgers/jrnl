@@ -1,5 +1,15 @@
 # Development log
 
+## 2026-09-28 — 0.2.0a
+
+Branch: `feat/setup-menus`.
+
+- Replaced the single path prompt with clack-bash location and filename selectors, defaulting to `~/Documents/jrnl.md`. Custom inputs use Bash Readline completion; filename completion uses an existing chosen directory. Normalize `.md` case-insensitively and reject directory-valued filenames while retaining literal paths and existing resolution/configuration behavior.
+- Vendored the minimal selector and helpers from clack-bash commit `afe36b88ab574b14a7bbc05ed1707fb4d9849ee5`, with attribution, MIT terms, and documented adaptations. Retained upstream selection controls/rendering; added an initial index, EOF handling, scoped signal/cleanup traps, and terminal-aware output. Verified on macOS Bash 3.2 without new runtime dependencies.
+- Install the selector (including embedded MIT terms) as `~/.local/share/jrnl/clack-select.sh` alongside the unchanged zsh integration. Extended dry-run, source validation, atomic copying, reinstall and unrelated-file protection; updated setup and uninstall documentation.
+- All 45 tests pass on macOS with Bash 3.2, including choices/defaults, suffix normalization, validation, symlinks, Readline Tab completion, Ctrl+C, repo removal, reinstall/dry-run and existing config/ZLE/locking coverage. Terminal tests now claim a controlling terminal to exercise signals. Aligned stale success-output expectations with existing main behavior; logging output was not changed.
+- Bash/zsh syntax checks, ShellCheck and whitespace checks passed. Version bumped once from 0.1.2a to 0.2.0a. Both prior local work branches were already contained in main, so no merge was needed. No commits or pushes. ANSI terminals provide the interactive rendering; Linux validation remains deferred.
+
 ## 2026-09-27 — 0.1.2a
 
 Branch: `codex/jrnl-display-format`.

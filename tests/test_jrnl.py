@@ -29,6 +29,7 @@ class JournalTests(unittest.TestCase):
         self.script = SCRIPT
         self.installed = self.home / ".local/bin/jrnl"
         self.integration = self.home / ".local/share/jrnl/jrnl.zsh"
+        self.selector = self.home / ".local/share/jrnl/clack-select.sh"
         self.log = self.home / "notes with spaces" / "engineering.md"
         self.bin = self.home / "bin"
         self.bin.mkdir()
@@ -52,6 +53,10 @@ class JournalTests(unittest.TestCase):
         else:
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
+
+    def setup_input(self, path=None):
+        path = Path(path or self.log)
+        return f"j\n{path.parent}\njj\n{path.name}\n"
 
     def install(self, *args, root=ROOT, ok=True):
         result = subprocess.run([str(root / "install.sh"), *args], env=self.env,
@@ -80,7 +85,7 @@ class JournalTests(unittest.TestCase):
             self.assertIn("--show", help_text)
             self.assertNotIn("--cat", help_text)
         for flag in ("-V", "--version"):
-            self.assertEqual(self.run_jrnl(flag).stdout, "jrnl 0.1.2a\n")
+            self.assertEqual(self.run_jrnl(flag).stdout, "jrnl 0.2.0a\n")
         self.assertIn("Usage:", self.run_jrnl().stdout)
         self.run_jrnl("--typo", ok=False)
         self.assertIn("Unknown option: --cat", self.run_jrnl("--cat", ok=False).stderr)
@@ -165,8 +170,8 @@ class JournalTests(unittest.TestCase):
         else:
             first = f"[✓] [13:26:21] {entry}\n"
             hint = "[i] Show all entries with jrnl --show or open with jrnl -o\n"
-        return (first + f"    was written to {self.log.name}\n"
-                f"    in {self.log.parent}/\n\n" + hint)
+        return ("\n" + first + f"    was written to {self.log.name}\n"
+                f"    in {self.log.parent}/\n" + hint)
 
     def test_success_output_and_noninteractive_color(self):
         self.env["TERM"] = "xterm-256color"
@@ -229,19 +234,212 @@ class JournalTests(unittest.TestCase):
                 self.assertEqual(output, self.success_output(entry))
                 self.assertNotIn("\033", output)
 
+    def test_setup_defaults_create_documents_and_jrnl(self):
+        self.env.pop("JRNL_FILE")
+        self.assertFalse((self.home / "Documents").exists())
+        result = self.run_jrnl("--setup", input="\n\n")
+        target = self.home / "Documents/jrnl.md"
+        self.assertTrue(target.is_file())
+        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        self.assertIn("Journal location\nDefault: ~/Documents/", result.stderr)
+        self.assertIn("Journal filename\nDefault: jrnl.md", result.stderr)
+        self.assertIn("Journal: ~/Documents/jrnl.md", result.stdout)
+        self.assertIn(str(target), self.zsh('source "$HOME/.zshrc"; jrnl --check').stdout)
+        for instruction in ("↑", "↓", "Enter", "j/k", "arrow"):
+            self.assertNotIn(instruction, result.stderr)
+        before = (self.home / ".zshrc").stat().st_mtime_ns
+        self.run_jrnl("--setup", input="\n\n")
+        self.assertEqual((self.home / ".zshrc").stat().st_mtime_ns, before)
+        self.assertFalse((self.home / ".zshrc.jrnl.bak").exists())
+
+    def test_setup_location_and_filename_choices(self):
+        for location, location_keys in (("", "k\n"), ("Documents", "kj\n")):
+            for name, filename_keys in (("jrnl.md", "\n"), ("journal.md", "k\n"),
+                                        ("devlog.md", "j\n")):
+                with self.subTest(location=location, name=name):
+                    self.run_jrnl("--setup", input=location_keys + filename_keys)
+                    target = self.home / location / name
+                    self.assertTrue(target.is_file())
+                    self.assertIn(str(target), self.zsh('source "$HOME/.zshrc"; jrnl --check').stdout)
+
+    def test_custom_location_and_filename_suffixes(self):
+        for name in ("notes", "notes.md", "NOTES.MD", "mixed.Md", "mixed.mD", "devlog",
+                     "engineering-log", "literal $name `code` \\ !"):
+            with self.subTest(name=name):
+                directory = "~/new directory/nested"
+                self.run_jrnl("--setup", input=f"j\n{directory}\njj\n{name}\n")
+                expected = name if name.lower().endswith(".md") else name + ".md"
+                target = self.home / "new directory/nested" / expected
+                self.assertTrue(target.is_file())
+                self.assertIn(str(target), self.zsh('source "$HOME/.zshrc"; jrnl --check').stdout)
+                self.assertFalse(Path(str(target) + ".md").exists())
+
+    def test_path_logic_without_menu_rendering(self):
+        # Source the pure path helper; it must not create files or evaluate input.
+        for name, expected in (("notes", "notes.md"), ("NOTES.MD", "NOTES.MD"),
+                               ("notes.md", "notes.md"), ("x.Md", "x.Md")):
+            result = subprocess.run(["/bin/bash", "-c", 'source "$1"; journal_path "$2" "$3"',
+                                     "test", str(SCRIPT), str(self.home / "missing"), name],
+                                    env=self.env, text=True, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, str(self.home / "missing" / expected) + "\n")
+        self.assertFalse((self.home / "missing").exists())
+
+    def test_custom_relative_and_symlink_paths(self):
+        directory = self.home / "actual"
+        directory.mkdir()
+        link = self.home / "linked"
+        link.symlink_to(directory)
+        target = directory / "real.md"
+        target.write_text("Keep me\n")
+        target.chmod(0o640)
+        (directory / "alias.md").symlink_to(target)
+        relative = os.path.relpath(link, ROOT)
+        self.run_jrnl("--setup", input=f"j\n{relative}\njj\nalias.md\n")
+        self.assertEqual(target.read_text(), "Keep me\n")
+        self.assertEqual(target.stat().st_mode & 0o777, 0o640)
+        self.assertTrue((directory / "alias.md").is_symlink())
+        self.assertIn(str(target), self.zsh('source "$HOME/.zshrc"; jrnl --check').stdout)
+
+    def test_setup_rejects_invalid_directories_and_filenames(self):
+        directory = self.home / "folder"
+        directory.mkdir()
+        (directory / "existing").mkdir()
+        (directory / "normalized.md").mkdir()
+        (directory / "link.md").symlink_to(directory / "existing")
+        file = self.home / "not-a-directory"
+        file.write_text("keep")
+        for location in ("", " ", str(file), "bad\rpath"):
+            with self.subTest(location=location):
+                self.run_jrnl("--setup", input=f"j\n{location}\n\n", ok=False)
+        for name in ("", " ", ".", "..", "~", "nested/file", "file/", "/tmp/file",
+                     "bad\rname", "existing", "normalized", "link.md"):
+            with self.subTest(name=name):
+                self.run_jrnl("--setup", input=f"j\n{directory}\njj\n{name}\n", ok=False)
+        self.assertFalse((self.home / ".zshrc").exists())
+        self.assertFalse(self.installed.exists())
+        self.assertEqual(file.read_text(), "keep")
+
+    def test_setup_eof_and_cancel_at_each_step_do_not_write(self):
+        for keys in ("", "\x03", "j\n", "\n", "\n\x03", "\njj\n"):
+            with self.subTest(keys=keys):
+                self.assertIn("cancelled", self.run_jrnl("--setup", input=keys, ok=False).stderr)
+                self.assertFalse((self.home / "Documents").exists())
+                self.assertFalse((self.home / ".zshrc").exists())
+                self.assertFalse((self.home / ".local").exists())
+
+    def test_selector_navigation_and_wraparound(self):
+        for keys, expected in (("\n", "Documents"), ("k\n", "Home"), ("K\n", "Home"),
+                               ("j\n", "Other"), ("J\n", "Other"), ("kk\n", "Other"),
+                               ("jj\n", "Home"), ("\x1b[A\n", "Home"),
+                               ("\x1b[B\n", "Other"), ("\x1bOA\n", "Home"),
+                               ("\x1bOB\n", "Other")):
+            with self.subTest(keys=keys):
+                result = subprocess.run(["/bin/bash", "-c", 'set -eu; source "$1"; '
+                                         'clack_select Location 1 Home Documents Other',
+                                         "test", str(ROOT / "vendor/clack-bash/select.sh")],
+                                        env=self.env, input=keys, text=True, capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, expected)
+                self.assertNotIn("\x1b", result.stderr)
+
+    def test_installer_protects_selector_and_checks_missing_source(self):
+        self.selector.parent.mkdir(parents=True)
+        for kind in ("file", "directory", "symlink"):
+            with self.subTest(kind=kind):
+                victim = self.home / "unrelated"
+                victim.write_text("keep me")
+                if kind == "file":
+                    self.selector.write_text("unrelated selector")
+                elif kind == "directory":
+                    self.selector.mkdir()
+                else:
+                    self.selector.symlink_to(victim)
+                for args in ((), ("--dry-run",)):
+                    self.assertIn("Refusing to replace", self.install(*args, ok=False).stderr)
+                    self.assertFalse(self.installed.exists())
+                    self.assertFalse(self.integration.exists())
+                    self.assertEqual(victim.read_text(), "keep me")
+                if kind == "directory":
+                    self.selector.rmdir()
+                else:
+                    self.selector.unlink()
+        repo = self.home / "incomplete"
+        repo.mkdir()
+        for name in ("jrnl.sh", "jrnl.zsh", "install.sh"):
+            shutil.copy2(ROOT / name, repo / name)
+        self.assertIn("Missing installation files", self.install(root=repo, ok=False).stderr)
+        self.assertFalse(self.installed.exists())
+
+    def test_installed_setup_reports_missing_selector(self):
+        self.install()
+        self.selector.unlink()
+        self.script = self.installed
+        self.assertIn("Missing setup selector", self.run_jrnl("--setup", input="\n\n", ok=False).stderr)
+        # Unrelated flags and configured logging do not load the selector.
+        self.run_jrnl("--help")
+        self.run_jrnl("Still logs")
+        self.install()
+        self.run_jrnl("--setup", input="\n\n")
+
+    def test_real_terminal_readline_completion(self):
+        session = self.start_zsh()
+        directory = self.home / "vscode-projects"
+        directory.mkdir()
+        journal = directory / "engineering-log.md"
+        journal.write_text("Keep existing content\n")
+        session.write("jrnl --setup\n")
+        session.expect(b"Location", suffix=False)
+        session.write("j\n")
+        session.expect(b"Directory path: ")
+        session.write("~/vscode-pro\t")
+        session.expect(b"vscode-projects/", suffix=False)
+        session.write("\n")
+        session.expect(b"Filename", suffix=False)
+        session.write("jj\n")
+        session.expect(b"Filename: ")
+        session.write("engineering-l\t")
+        session.expect(b"engineering-log.md", suffix=False)
+        session.send("")
+        self.assertIn(str(journal), session.send("jrnl --check"))
+        self.assertEqual(journal.read_text(), "Keep existing content\n")
+
+    def test_real_terminal_defaults_and_cancellation(self):
+        session = self.start_zsh()
+        rc = self.home / ".zshrc"
+        original = rc.read_bytes()
+        session.write("jrnl --setup\n")
+        menu = session.expect(b"Other", suffix=False)
+        self.assertIn("Default: ~/Documents/", menu)
+        self.assertRegex(menu, r"[●>] Documents")
+        session.prompt_number += 1
+        session.write("\x03")
+        output = session.expect(f"JRNL_READY_{session.prompt_number}> ".encode())
+        self.assertIn("\x1b[?25h", output)
+        self.assertEqual(rc.read_bytes(), original)
+        self.assertFalse((self.home / "Documents").exists())
+        session.write("jrnl --setup\n")
+        session.expect(b"Other", suffix=False)
+        session.write("\n")
+        menu = session.expect(b"Other", suffix=False)
+        self.assertIn("Default: jrnl.md", menu)
+        self.assertRegex(menu, r"[●>] jrnl.md")
+        session.send("")
+        self.assertTrue((self.home / "Documents/jrnl.md").is_file())
+
     def test_setup_preserves_config_and_is_repeatable(self):
         rc = self.home / ".zshrc"
         original = "# Keep this\nexport EXISTING=value\n"
         rc.write_text(original)
         path = self.home / "O'Brien $notes [work]" / "diary"
-        self.run_jrnl("--setup", input=str(path) + "\n")
+        self.run_jrnl("--setup", input=self.setup_input(path))
         configured = Path(str(path) + ".md")
         self.assertTrue(configured.is_file())
         self.assertEqual((self.home / ".zshrc.jrnl.bak").read_text(), original)
         self.assertTrue(rc.read_text().startswith(original))
         first_config = rc.read_bytes()
         first_stat = rc.stat()
-        self.run_jrnl("--setup", input=str(path) + "\n")
+        self.run_jrnl("--setup", input=self.setup_input(path))
         self.assertEqual(rc.read_bytes(), first_config)
         self.assertEqual(rc.stat().st_mtime_ns, first_stat.st_mtime_ns)
         self.assertEqual((self.home / ".zshrc.jrnl.bak").read_text(), original)
@@ -250,6 +448,7 @@ class JournalTests(unittest.TestCase):
         self.assertNotIn(str(ROOT), rc.read_text())
         self.assertTrue(self.installed.is_file())
         self.assertTrue(self.integration.is_file())
+        self.assertTrue(self.selector.is_file())
         if shutil.which("zsh"):
             result = subprocess.run(["zsh", "-dfc", 'source "$HOME/.zshrc"; jrnl --check'],
                                     env=self.env, text=True, capture_output=True, timeout=10)
@@ -263,7 +462,7 @@ class JournalTests(unittest.TestCase):
         original = before + "# >>> jrnl >>>\nsource /old/repo/jrnl.zsh\n# <<< jrnl <<<\n" + after
         rc.write_text(original)
         rc.chmod(0o640)
-        self.run_jrnl("--setup", input="\n")
+        self.run_jrnl("--setup", input=self.setup_input())
         self.assertTrue(rc.read_text().startswith(before))
         self.assertTrue(rc.read_text().endswith(after))
         self.assertNotIn("/old/repo", rc.read_text())
@@ -272,14 +471,16 @@ class JournalTests(unittest.TestCase):
 
     def test_installer_dry_run_and_reinstall(self):
         original = {p.relative_to(self.home): p.read_bytes() for p in self.home.rglob("*") if p.is_file()}
-        self.assertIn("No changes made", self.install("--dry-run").stdout)
+        preview = self.install("--dry-run").stdout
+        self.assertIn("No changes made", preview)
+        self.assertIn(str(self.selector), preview)
         self.assertFalse((self.home / ".local").exists())
         self.assertEqual(original, {p.relative_to(self.home): p.read_bytes() for p in self.home.rglob("*") if p.is_file()})
         self.assertIn("Usage:", self.install("--help").stdout)
         self.install("--dry-run", "extra", ok=False)
         self.install("--typo", ok=False)
         result = self.install()
-        self.assertIn("jrnl 0.1.2a", result.stdout)
+        self.assertIn("jrnl 0.2.0a", result.stdout)
         self.assertIn("not on PATH", result.stdout)
         self.assertIn(str(self.installed), result.stdout)
         self.assertFalse((self.home / ".zshrc").exists())
@@ -288,12 +489,19 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(self.integration.read_bytes(), (ROOT / "jrnl.zsh").read_bytes())
         self.assertEqual(self.installed.stat().st_mode & 0o777, 0o755)
         self.assertEqual(self.integration.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(self.selector.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(self.selector.read_bytes(), (ROOT / "vendor/clack-bash/select.sh").read_bytes())
+        self.assertIn("Permission is hereby granted", self.selector.read_text())
         # An older installed copy is safely replaced; dry-run does not replace it.
-        self.installed.write_text(self.installed.read_text().replace("VERSION=0.1.2a", "VERSION=0.0.1a"))
+        self.installed.write_text(self.installed.read_text().replace("VERSION=0.2.0a", "VERSION=0.0.1a"))
+        self.selector.write_text(self.selector.read_text() + "\n# older copy\n")
+        old_selector = self.selector.read_bytes()
         old = self.installed.read_bytes()
         self.install("--dry-run")
         self.assertEqual(self.installed.read_bytes(), old)
+        self.assertEqual(self.selector.read_bytes(), old_selector)
         self.install()
+        self.assertEqual(self.selector.read_bytes(), (ROOT / "vendor/clack-bash/select.sh").read_bytes())
         self.assertEqual(self.installed.read_bytes(), SCRIPT.read_bytes())
 
     def test_installed_files_survive_repo_move_and_removal(self):
@@ -301,15 +509,16 @@ class JournalTests(unittest.TestCase):
         repo.mkdir()
         for name in ("jrnl.sh", "jrnl.zsh", "install.sh"):
             shutil.copy2(ROOT / name, repo / name)
+        shutil.copytree(ROOT / "vendor", repo / "vendor")
         self.install(root=repo)
         self.script = self.installed
-        self.run_jrnl("--setup", input="\n")
+        self.run_jrnl("--setup", input=self.setup_input())
         moved = repo.with_name("moved checkout")
         repo.rename(moved)
         self.run_jrnl("Works after move")
         shutil.rmtree(moved)
         self.run_jrnl("Works after removal")
-        self.run_jrnl("--setup", input="\n")
+        self.run_jrnl("--setup", input=self.setup_input())
         for flag in ("-h", "--help", "-V", "--version", "--check", "--show"):
             self.run_jrnl(flag)
         self.run_jrnl("--", "--help")
@@ -317,7 +526,7 @@ class JournalTests(unittest.TestCase):
         for flag in ("-o", "--open"):
             self.assertIn(str(self.log), self.run_jrnl(flag).stdout)
         result = self.zsh('source "$HOME/.zshrc"; source "$HOME/.zshrc"; jrnl "Via zsh"; command jrnl --version; print -r -- "$PATH"')
-        self.assertIn("jrnl 0.1.2a", result.stdout)
+        self.assertIn("jrnl 0.2.0a", result.stdout)
         self.assertEqual(result.stdout.splitlines()[-1].split(":").count(str(self.installed.parent)), 1)
         self.assertIn("Via zsh", self.log.read_text())
         self.assertNotIn(str(repo), (self.home / ".zshrc").read_text())
@@ -346,7 +555,7 @@ class JournalTests(unittest.TestCase):
                 self.assertIn("was kept", result.stderr)
 
     def test_reloading_replaces_legacy_repo_wrapper(self):
-        self.run_jrnl("--setup", input="\n")
+        self.run_jrnl("--setup", input=self.setup_input())
         result = self.zsh('''source "$HOME/.zshrc"
 # Recreate the prior wrapper: same body, but it invoked bash on a repo script.
 functions[jrnl]=${functions[jrnl]/command /command bash }
@@ -355,7 +564,7 @@ JRNL_SCRIPT=/removed-checkout/jrnl.sh
 source "$HOME/.zshrc"
 jrnl --version
 ''')
-        self.assertEqual(result.stdout, "jrnl 0.1.2a\n")
+        self.assertEqual(result.stdout, "jrnl 0.2.0a\n")
         self.assertEqual(result.stderr, "")
 
     def test_setup_with_shell_sensitive_home_and_journal_paths(self):
@@ -363,7 +572,7 @@ jrnl --version
         special_home.mkdir()
         self.env["HOME"] = str(special_home)
         journal = special_home / "$(touch PWNED) `touch PWNED2` \\ !.md"
-        self.run_jrnl("--setup", input=str(journal) + "\n")
+        self.run_jrnl("--setup", input=self.setup_input(journal))
         result = self.zsh('source "$HOME/.zshrc"; jrnl --check; jrnl "Safe path"')
         self.assertIn(str(journal), result.stdout)
         self.assertIn("Safe path", journal.read_text())
@@ -378,7 +587,7 @@ jrnl --version
                          "# >>> jrnl >>>\n# >>> jrnl >>>\n# <<< jrnl <<<\n"):
             with self.subTest(original=original):
                 rc.write_text(original)
-                self.run_jrnl("--setup", input="\n", ok=False)
+                self.run_jrnl("--setup", input=self.setup_input(), ok=False)
                 self.assertEqual(rc.read_text(), original)
                 self.assertEqual(backup.read_text(), "previous backup")
         rc.write_text("# original\n")
@@ -386,13 +595,13 @@ jrnl --version
         victim = self.home / "keep-backup-target"
         victim.write_text("keep")
         backup.symlink_to(victim)
-        self.run_jrnl("--setup", input="\n", ok=False)
+        self.run_jrnl("--setup", input=self.setup_input(), ok=False)
         self.assertEqual(rc.read_text(), "# original\n")
         self.assertEqual(victim.read_text(), "keep")
 
     def test_missing_config_prompts_and_keeps_first_entry(self):
         self.env.pop("JRNL_FILE")
-        result = self.run_jrnl("First entry", input="~/new folder/diary.md\n")
+        result = self.run_jrnl("First entry", input=self.setup_input("~/new folder/diary.md"))
         self.assertIn("No journal path", result.stderr)
         self.assertIn("First entry", (self.home / "new folder/diary.md").read_text())
         self.assertIn("export JRNL_FILE=", (self.home / ".zshrc").read_text())
@@ -404,7 +613,7 @@ jrnl --version
         rc = self.home / ".zshrc"
         original = "# >>> jrnl >>>\nkeep all this\n"
         rc.write_text(original)
-        self.run_jrnl("--setup", input=str(self.log) + "\n", ok=False)
+        self.run_jrnl("--setup", input=self.setup_input(), ok=False)
         self.assertEqual(rc.read_text(), original)
         self.assertFalse(Path(str(rc) + ".lock").exists())
 
@@ -415,7 +624,7 @@ jrnl --version
         target = self.home / "actual-zshrc"
         target.write_text("# dotfiles\n")
         (config_dir / ".zshrc").symlink_to(target)
-        self.run_jrnl("--setup", input=str(self.log) + "\n")
+        self.run_jrnl("--setup", input=self.setup_input())
         self.assertTrue((config_dir / ".zshrc").is_symlink())
         self.assertIn("export JRNL_FILE=", target.read_text())
         self.assertFalse((self.home / ".zshrc").exists())
@@ -534,7 +743,7 @@ printf '%s\\n' "$JRNL_TEST_NOW"
         departed.wait(timeout=5)
         lock = self.home / ".zshrc.lock"
         (lock / str(departed.pid)).mkdir(parents=True)
-        self.run_jrnl("--setup", input="\n")
+        self.run_jrnl("--setup", input=self.setup_input())
         self.assertTrue((self.home / ".zshrc").is_file())
         self.assertFalse(lock.exists())
 
@@ -547,7 +756,7 @@ printf '%s\\n' "$JRNL_TEST_NOW"
             self.assertEqual(self.run_jrnl(flag).stdout, f"opened: {self.log}\n")
 
     def start_zsh(self, term="xterm-256color", columns=160, history_options=""):
-        self.run_jrnl("--setup", input="\n")
+        self.run_jrnl("--setup", input=self.setup_input())
         session = ZshSession(self, term, columns)
         session.send("RPROMPT=''; typeset -gi _jrnl_test_prompt=0; "
                      'precmd() { (( ++_jrnl_test_prompt )); PS1="JRNL_READY_${_jrnl_test_prompt}> "; }; '
@@ -615,7 +824,7 @@ printf '%s\\n' "$JRNL_TEST_NOW"
         for flag in ("", "-h", "--help"):
             self.assertIn("Usage:", session.send("jrnl" + (" " + flag if flag else "")))
         for flag in ("-V", "--version"):
-            self.assertIn("jrnl 0.1.2a", session.send("jrnl " + flag))
+            self.assertIn("jrnl 0.2.0a", session.send("jrnl " + flag))
         self.assertIn(str(self.log), session.send("jrnl --check"))
         for flag in ("--open", "-o"):
             self.assertIn(f"opened: {self.log}", session.send("jrnl " + flag))
@@ -635,9 +844,13 @@ printf '%s\\n' "$JRNL_TEST_NOW"
             self.assertEqual(self.log.read_bytes(), before)
         # The wrapper imports the new path into this same shell after setup.
         session.write("jrnl --setup\n")
-        session.expect(b"Journal file path [", suffix=False)
+        session.expect(b"Location", suffix=False)
+        session.write("k\n")
+        session.expect(b"Filename", suffix=False)
+        session.write("jj\n")
+        session.expect(b"Filename: ")
         new_log = self.home / "second $journal.md"
-        session.send(str(new_log))
+        session.send(new_log.name)
         session.send("jrnl After reconfiguration?")
         self.assertIn("After reconfiguration?", new_log.read_text())
         self.assertIn(str(new_log), session.send("jrnl --check"))
@@ -692,7 +905,8 @@ class ZshSession:
         env = dict(test.env, TERM=term, NO_COLOR="1")
         self.shell = subprocess.Popen(["zsh", "-dfi"], cwd=test.home, env=env,
                                       stdin=slave, stdout=slave, stderr=slave,
-                                      start_new_session=True)
+                                      start_new_session=True,
+                                      preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0))
         os.close(slave)
         self.prompt_number = 0
         test.addCleanup(self.close)
@@ -701,9 +915,10 @@ class ZshSession:
         if self.fd is None:
             return
         self.shell.kill()
-        self.shell.wait(timeout=2)
+        # Close the controlling terminal before waiting (macOS tty teardown).
         os.close(self.fd)
         self.fd = None
+        self.shell.wait(timeout=5)
 
     def write(self, text):
         os.write(self.fd, text.encode())
