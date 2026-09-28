@@ -14,7 +14,7 @@ case "${1:-}" in
     '') ;;
     --dry-run) dry_run=1 ;;
     -h|--help)
-        printf 'Usage: ./install.sh [--dry-run]\nInstall jrnl into ~/.local/bin and its zsh integration into ~/.local/share/jrnl.\n'
+        printf 'Usage: ./install.sh [--dry-run]\nInstall jrnl into ~/.local/bin and its zsh integration and setup selector into ~/.local/share/jrnl.\n'
         exit 0 ;;
     *) error 'Usage: ./install.sh [--dry-run]' ;;
 esac
