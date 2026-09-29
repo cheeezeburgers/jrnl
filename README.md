@@ -11,7 +11,7 @@ Write down what you just fixed, broke, investigated or want to remember, without
 `jrnl` saves it to a Markdown file with the current date and time.
 
 > [!NOTE]
-> __Version 0.2.1a__ — Tested on macOS with Bash 3.2 and zsh. Linux validation is planned for a later version.
+> __Version 0.2.2a__ — Tested on macOS with Bash 3.2 and zsh. Linux validation is planned for a later version.
 
 ## Install
 
@@ -75,7 +75,13 @@ Other
 
 Choosing **Other** lets you enter your own directory or filename. These prompts support normal Tab completion.
 
-If you enter a custom filename without a Markdown suffix, `jrnl` adds `.md` automatically:
+If you enter a custom filename without a suffix, `jrnl` adds `.md` automatically. Existing suffixes are kept:
+
+```text
+dev-journal       → dev-journal.md
+dev-journal.md    → dev-journal.md
+notes.txt         → notes.txt
+```
 
 Run `jrnl --setup` again whenever you want to move to a different journal.
 
@@ -94,6 +100,22 @@ Even shell-looking text stays journal text:
 ```sh
 jrnl Why did <this> happen? {} # []., $foo | whatever
 ```
+
+> [!TIP]
+> Want to journal the command you just ran? zsh expands `!!` to the previous command:
+>
+> ```
+> ❯ git status
+> On branch main [...]
+> 
+> ❯ jrnl I used !! command
+> ```
+> 
+> Creates directly after space:
+>
+> ```
+> ❯ jrnl I used git status command
+> ```
 
 In interactive zsh, `jrnl` uses a small ZLE integration to capture everything after the command literally before the shell gets creative with it.
 
