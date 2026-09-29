@@ -1,5 +1,16 @@
 # Development log
 
+## 2026-09-29 — 0.2.2a
+
+Branch: `codex/fix-setup-retries`.
+
+- Retry location and filename validation independently, retaining the selected location after filename errors. Preserve useful errors and cancellation on EOF/Ctrl+C; propagate signal failures instead of retrying them. Selector rendering and ZLE integration are unchanged.
+- Trim surrounding filename whitespace while preserving internal spaces. Append `.md` only when there is no suffix; preserve existing suffixes and their casing, including `.txt`, and check directory targets after cleanup.
+- Keep the relocated suite in `development/tests/`, fix its repository root and README test command, and use the canonical script version in tests. Align stale expectations with the existing UI. Preserve the relocated development log with a narrow ignore exception; README changes are limited to the explicitly requested test command.
+- Add regression coverage for empty/invalid inputs, directory and symlink targets, whitespace/suffix handling, successful recovery at each selector, and real-terminal cancellation after retries. Final `python3 development/tests/test_jrnl.py`: 49 of 50 tests passed on macOS Bash 3.2/zsh 5.9, including all new regressions and installer/dry-run checks. Bash/zsh syntax, ShellCheck, executable permissions and whitespace checks passed.
+- Remaining validation issue: the existing `test_real_terminal_defaults_and_cancellation` intermittently misses the selector's cursor-show escape after Ctrl+C. Reproduced against an isolated copy of the original `HEAD` implementation (7 failures in 16 diagnostic runs). Retained its assertion and left the selector unchanged; cancellation returns to the shell. Terminal synchronization experiments were removed.
+- Version bumped once from 0.2.1a to 0.2.2a. No staging, commits, or pushes. Linux validation remains deferred.
+
 ## 2026-09-28 — 0.2.0a
 
 Branch: `feat/setup-menus`.

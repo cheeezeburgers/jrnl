@@ -232,7 +232,7 @@ Your journal and `.zshrc.jrnl.bak` are left untouched.
 Run the tests:
 
 ```sh
-python3 tests/test_jrnl.py
+python3 development/tests/test_jrnl.py
 ```
 
 Syntax checks:

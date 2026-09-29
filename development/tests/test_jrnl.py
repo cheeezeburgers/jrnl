@@ -17,8 +17,9 @@ import tempfile
 import time
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "jrnl.sh"
+VERSION = re.search(r"^VERSION=(\S+)$", SCRIPT.read_text(), re.MULTILINE).group(1)
 
 
 class JournalTests(unittest.TestCase):
@@ -85,7 +86,7 @@ class JournalTests(unittest.TestCase):
             self.assertIn("--show", help_text)
             self.assertNotIn("--cat", help_text)
         for flag in ("-V", "--version"):
-            self.assertEqual(self.run_jrnl(flag).stdout, "jrnl 0.2.0a\n")
+            self.assertEqual(self.run_jrnl(flag).stdout, f"jrnl {VERSION}\n")
         self.assertIn("Usage:", self.run_jrnl().stdout)
         self.run_jrnl("--typo", ok=False)
         self.assertIn("Unknown option: --cat", self.run_jrnl("--cat", ok=False).stderr)
@@ -241,11 +242,11 @@ class JournalTests(unittest.TestCase):
         target = self.home / "Documents/jrnl.md"
         self.assertTrue(target.is_file())
         self.assertEqual(target.stat().st_mode & 0o777, 0o600)
-        self.assertIn("Journal location\nDefault: ~/Documents/", result.stderr)
-        self.assertIn("Journal filename\nDefault: jrnl.md", result.stderr)
-        self.assertIn("Journal: ~/Documents/jrnl.md", result.stdout)
+        self.assertIn("Where should your journal live?", result.stderr)
+        self.assertIn("Enter the name for your jrnl-file:", result.stderr)
+        self.assertIn("Journal path and file name: ~/Documents/jrnl.md", result.stdout)
         self.assertIn(str(target), self.zsh('source "$HOME/.zshrc"; jrnl --check').stdout)
-        for instruction in ("↑", "↓", "Enter", "j/k", "arrow"):
+        for instruction in ("↑", "↓", "j/k", "arrow"):
             self.assertNotIn(instruction, result.stderr)
         before = (self.home / ".zshrc").stat().st_mtime_ns
         self.run_jrnl("--setup", input="\n\n")
@@ -277,13 +278,81 @@ class JournalTests(unittest.TestCase):
     def test_path_logic_without_menu_rendering(self):
         # Source the pure path helper; it must not create files or evaluate input.
         for name, expected in (("notes", "notes.md"), ("NOTES.MD", "NOTES.MD"),
-                               ("notes.md", "notes.md"), ("x.Md", "x.Md")):
+                               ("notes.md", "notes.md"), ("x.Md", "x.Md"),
+                               ("notes.txt", "notes.txt"), ("  notes.md  ", "notes.md"),
+                               ("  notes  ", "notes.md"), ("notes  today.txt ", "notes  today.txt")):
             result = subprocess.run(["/bin/bash", "-c", 'source "$1"; journal_path "$2" "$3"',
                                      "test", str(SCRIPT), str(self.home / "missing"), name],
                                     env=self.env, text=True, capture_output=True, timeout=5)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, str(self.home / "missing" / expected) + "\n")
         self.assertFalse((self.home / "missing").exists())
+
+    def test_custom_filename_suffixes_and_whitespace(self):
+        cases = (("dev-journal", "dev-journal.md"),
+                 ("dev-journal.md", "dev-journal.md"),
+                 ("DEV-JOURNAL.MD", "DEV-JOURNAL.MD"),
+                 ("dev-journal.txt", "dev-journal.txt"),
+                 ("  dev-journal  ", "dev-journal.md"),
+                 ("dev-journal.md ", "dev-journal.md"),
+                 ("  DEV-JOURNAL.MD  ", "DEV-JOURNAL.MD"),
+                 ("\t dev-journal.txt \t", "dev-journal.txt"),
+                 ("  dev  journal  ", "dev  journal.md"),
+                 ("  dev  journal.md  ", "dev  journal.md"),
+                 ("archive.tar.gz", "archive.tar.gz"),
+                 (".journal", ".journal.md"),
+                 (".journal.txt", ".journal.txt"))
+        for index, (name, expected) in enumerate(cases):
+            with self.subTest(name=name):
+                directory = self.home / f"suffix-{index}"
+                self.run_jrnl("--setup", input=f"j\n{directory}\njj\n{name}\n")
+                self.assertEqual([p.name for p in directory.iterdir()], [expected])
+                self.assertIn(str(directory / expected),
+                              self.zsh('source "$HOME/.zshrc"; jrnl --check').stdout)
+
+    def test_setup_retries_empty_and_invalid_locations(self):
+        file = self.home / "not-a-directory"
+        file.write_text("keep")
+        loop = self.home / "loop"
+        loop.symlink_to(loop)
+        invalid = (("", "The directory path must be a nonempty single line."),
+                   (" \t ", "The directory path must be a nonempty single line."),
+                   ("bad\rpath", "The directory path must be a nonempty single line."),
+                   (str(file), "Please choose a directory."),
+                   (str(loop), "Too many symlinks:"))
+        for location, message in invalid:
+            with self.subTest(location=location):
+                result = self.run_jrnl("--setup", input=f"j\n{location}\nj\n{self.log.parent}\n\n")
+                self.assertIn(message, result.stderr)
+                self.assertEqual(result.stderr.count("Where should your journal live?"), 2)
+                self.assertEqual(result.stderr.count("Enter the name for your jrnl-file:"), 1)
+                target = self.log.parent / "jrnl.md"
+                self.assertTrue(target.is_file())
+                self.assertIn(str(target), self.zsh('source "$HOME/.zshrc"; jrnl --check').stdout)
+        self.assertEqual(file.read_text(), "keep")
+        self.assertTrue(loop.is_symlink())
+
+    def test_setup_retries_empty_and_invalid_filenames_in_chosen_location(self):
+        directory = self.home / "chosen location"
+        directory.mkdir()
+        (directory / "existing").mkdir()
+        (directory / "normalized.md").mkdir()
+        (directory / "link.md").symlink_to(directory / "existing")
+        invalid = ("", " \t ", ".", "..", "~", "nested/file", "file/", "/tmp/file", "bad\rname")
+        directories = ("existing", "normalized", "link.md", "  existing  ")
+        for index, name in enumerate(invalid + directories):
+            with self.subTest(name=name):
+                target = directory / f"recovered-{index}.md"
+                result = self.run_jrnl("--setup", input=f"j\n{directory}\njj\n{name}\njj\n{target.name}\n")
+                message = ("The filename resolves to a directory." if name in directories else
+                           "Please enter a filename without a directory path.")
+                self.assertIn(message, result.stderr)
+                self.assertEqual(result.stderr.count("Where should your journal live?"), 1)
+                self.assertEqual(result.stderr.count("Enter the name for your jrnl-file:"), 2)
+                self.assertTrue(target.is_file())
+                self.assertIn(str(target), self.zsh('source "$HOME/.zshrc"; jrnl --check').stdout)
+        self.assertFalse((self.home / "Documents").exists())
+        self.assertTrue((directory / "link.md").is_symlink())
 
     def test_custom_relative_and_symlink_paths(self):
         directory = self.home / "actual"
@@ -321,7 +390,8 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(file.read_text(), "keep")
 
     def test_setup_eof_and_cancel_at_each_step_do_not_write(self):
-        for keys in ("", "\x03", "j\n", "\n", "\n\x03", "\njj\n"):
+        for keys in ("", "\x03", "j\n", "\n", "\n\x03", "\njj\n",
+                     "j\n\n", "j\n\n\x03", "\njj\n\n", "\njj\nnested/file\n\x03"):
             with self.subTest(keys=keys):
                 self.assertIn("cancelled", self.run_jrnl("--setup", input=keys, ok=False).stderr)
                 self.assertFalse((self.home / "Documents").exists())
@@ -410,8 +480,8 @@ class JournalTests(unittest.TestCase):
         original = rc.read_bytes()
         session.write("jrnl --setup\n")
         menu = session.expect(b"Other", suffix=False)
-        self.assertIn("Default: ~/Documents/", menu)
-        self.assertRegex(menu, r"[●>] Documents")
+        self.assertIn("Location", menu)
+        self.assertRegex(menu, r"[❯>] Documents")
         session.prompt_number += 1
         session.write("\x03")
         output = session.expect(f"JRNL_READY_{session.prompt_number}> ".encode())
@@ -422,10 +492,78 @@ class JournalTests(unittest.TestCase):
         session.expect(b"Other", suffix=False)
         session.write("\n")
         menu = session.expect(b"Other", suffix=False)
-        self.assertIn("Default: jrnl.md", menu)
-        self.assertRegex(menu, r"[●>] jrnl.md")
+        self.assertIn("Filename", menu)
+        self.assertRegex(menu, r"[❯>] jrnl.md")
         session.send("")
         self.assertTrue((self.home / "Documents/jrnl.md").is_file())
+
+    def test_real_terminal_setup_retries_current_step(self):
+        session = self.start_zsh()
+        rc = self.home / ".zshrc"
+        original = rc.read_bytes()
+        directory = self.home / "chosen location"
+        directory.mkdir()
+        (directory / "existing").mkdir()
+        file = self.home / "not-a-directory"
+        file.write_text("keep")
+        session.write("jrnl --setup\n")
+        session.expect(b"Other", suffix=False)
+        for value, message in (("", "nonempty single line"), (str(file), "Please choose a directory")):
+            session.write("j\n")
+            session.expect(b"Directory path: ")
+            session.write(value + "\n")
+            menu = session.expect(b"Other", suffix=False)
+            self.assertIn(message, menu)
+            self.assertIn("Location", menu)
+            self.assertNotIn("Filename", menu)
+            self.assertEqual(rc.read_bytes(), original)
+        session.write("j\n")
+        session.expect(b"Directory path: ")
+        session.write(str(directory) + "\n")
+        session.expect(b"Other", suffix=False)
+        for value, message in (("", "filename without a directory path"),
+                               ("existing", "filename resolves to a directory")):
+            session.write("jj\n")
+            session.expect(b"Filename: ")
+            session.write(value + "\n")
+            menu = session.expect(b"Other", suffix=False)
+            self.assertIn(message, menu)
+            self.assertIn("Filename", menu)
+            self.assertNotIn("Location", menu)
+            self.assertEqual(rc.read_bytes(), original)
+        session.write("jj\n")
+        session.expect(b"Filename: ")
+        session.send("  dev  journal.txt  ")
+        target = directory / "dev  journal.txt"
+        self.assertTrue(target.is_file())
+        self.assertIn(str(target), session.send("jrnl --check"))
+        self.assertEqual(file.read_text(), "keep")
+
+    def test_real_terminal_cancellation_after_validation_errors(self):
+        session = self.start_zsh()
+        rc = self.home / ".zshrc"
+        original = rc.read_bytes()
+        for stage in ("location selector", "location input", "filename selector", "filename input"):
+            with self.subTest(stage=stage):
+                session.write("jrnl --setup\n")
+                session.expect(b"Other", suffix=False)
+                if stage.startswith("filename"):
+                    session.write("\n")
+                    session.expect(b"Other", suffix=False)
+                keys = "jj\n" if stage.startswith("filename") else "j\n"
+                prompt = b"Filename: " if stage.startswith("filename") else b"Directory path: "
+                session.write(keys)
+                session.expect(prompt)
+                session.write("\n")
+                session.expect(b"Other", suffix=False)
+                if stage.endswith("input"):
+                    session.write(keys)
+                    session.expect(prompt)
+                session.prompt_number += 1
+                session.write("\x03")
+                session.expect(f"JRNL_READY_{session.prompt_number}> ".encode())
+                self.assertEqual(rc.read_bytes(), original)
+                self.assertFalse((self.home / "Documents").exists())
 
     def test_setup_preserves_config_and_is_repeatable(self):
         rc = self.home / ".zshrc"
@@ -480,7 +618,7 @@ class JournalTests(unittest.TestCase):
         self.install("--dry-run", "extra", ok=False)
         self.install("--typo", ok=False)
         result = self.install()
-        self.assertIn("jrnl 0.2.0a", result.stdout)
+        self.assertIn(f"jrnl {VERSION}", result.stdout)
         self.assertIn("not on PATH", result.stdout)
         self.assertIn(str(self.installed), result.stdout)
         self.assertFalse((self.home / ".zshrc").exists())
@@ -493,7 +631,7 @@ class JournalTests(unittest.TestCase):
         self.assertEqual(self.selector.read_bytes(), (ROOT / "vendor/clack-bash/select.sh").read_bytes())
         self.assertIn("Permission is hereby granted", self.selector.read_text())
         # An older installed copy is safely replaced; dry-run does not replace it.
-        self.installed.write_text(self.installed.read_text().replace("VERSION=0.2.0a", "VERSION=0.0.1a"))
+        self.installed.write_text(self.installed.read_text().replace(f"VERSION={VERSION}", "VERSION=0.0.1a"))
         self.selector.write_text(self.selector.read_text() + "\n# older copy\n")
         old_selector = self.selector.read_bytes()
         old = self.installed.read_bytes()
@@ -526,7 +664,7 @@ class JournalTests(unittest.TestCase):
         for flag in ("-o", "--open"):
             self.assertIn(str(self.log), self.run_jrnl(flag).stdout)
         result = self.zsh('source "$HOME/.zshrc"; source "$HOME/.zshrc"; jrnl "Via zsh"; command jrnl --version; print -r -- "$PATH"')
-        self.assertIn("jrnl 0.2.0a", result.stdout)
+        self.assertIn(f"jrnl {VERSION}", result.stdout)
         self.assertEqual(result.stdout.splitlines()[-1].split(":").count(str(self.installed.parent)), 1)
         self.assertIn("Via zsh", self.log.read_text())
         self.assertNotIn(str(repo), (self.home / ".zshrc").read_text())
@@ -564,7 +702,7 @@ JRNL_SCRIPT=/removed-checkout/jrnl.sh
 source "$HOME/.zshrc"
 jrnl --version
 ''')
-        self.assertEqual(result.stdout, "jrnl 0.2.0a\n")
+        self.assertEqual(result.stdout, f"jrnl {VERSION}\n")
         self.assertEqual(result.stderr, "")
 
     def test_setup_with_shell_sensitive_home_and_journal_paths(self):
@@ -824,7 +962,7 @@ printf '%s\\n' "$JRNL_TEST_NOW"
         for flag in ("", "-h", "--help"):
             self.assertIn("Usage:", session.send("jrnl" + (" " + flag if flag else "")))
         for flag in ("-V", "--version"):
-            self.assertIn("jrnl 0.2.0a", session.send("jrnl " + flag))
+            self.assertIn(f"jrnl {VERSION}", session.send("jrnl " + flag))
         self.assertIn(str(self.log), session.send("jrnl --check"))
         for flag in ("--open", "-o"):
             self.assertIn(f"opened: {self.log}", session.send("jrnl " + flag))

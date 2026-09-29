@@ -3,7 +3,7 @@
 # jrnl: installed command
 set -euo pipefail
 
-VERSION=0.2.1a
+VERSION=0.2.2a
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SCRIPT_FILE=$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")
 INSTALLED_COMMAND=$HOME/.local/bin/jrnl
@@ -233,47 +233,72 @@ display_path() {
 
 # Keep input/selection separate from path validation and configuration writes.
 choose_journal_path() {
-    local location filename selector
+    local location filename selector status
     selector=$(selector_source)
     [[ -f "$selector" && -r "$selector" ]] || error 'Missing setup selector; reinstall from a complete checkout.'
     # shellcheck source=vendor/clack-bash/select.sh
     source "$selector" || error 'Cannot load setup selector; reinstall from a complete checkout.'
-    printf 'Where should your journal live?\n' >&2
-    location=$(clack_select 'Location' 1 Home Documents Other) || error 'Setup cancelled.'
-    case "$location" in
-        Home) location=$HOME ;;
-        Documents) location=$HOME/Documents ;;
-        Other)
-            printf 'Directory path: ' >&2
-            IFS= read -e -r location || error 'Setup cancelled: no directory received.' ;;
-        *) error 'Invalid location selection.' ;;
-    esac
+    while true; do
+        printf 'Where should your journal live?\n' >&2
+        location=$(clack_select 'Location' 1 Home Documents Other) || error 'Setup cancelled.'
+        case "$location" in
+            Home) location=$HOME ;;
+            Documents) location=$HOME/Documents ;;
+            Other)
+                printf 'Directory path: ' >&2
+                IFS= read -e -r location || error 'Setup cancelled: no directory received.' ;;
+            *) error 'Invalid location selection.' ;;
+        esac
+        # Validation runs in a subshell so its errors only restart this step.
+        if location=$(journal_location "$location"); then
+            break
+        else
+            status=$?
+            (( status == 1 )) || return "$status"
+        fi
+    done
+
+    while true; do
+        printf '\nEnter the name for your jrnl-file:\n' >&2
+        filename=$(clack_select 'Filename' 1 journal.md jrnl.md devlog.md Other) || error 'Setup cancelled.'
+        if [[ "$filename" == Other ]]; then
+            # choose_journal_path runs in a subshell; completion uses the chosen folder.
+            if [[ -d "$location" ]]; then cd -- "$location" || error "Cannot access directory: $location"; fi
+            printf 'Filename: ' >&2
+            IFS= read -e -r filename || error 'Setup cancelled: no filename received.'
+        fi
+        if (journal_path "$location" "$filename"); then
+            return
+        else
+            status=$?
+            (( status == 1 )) || return "$status"
+        fi
+    done
+}
+
+journal_location() {
+    local location=$1
     [[ "$location" == *[![:space:]]* && "$location" != *$'\n'* && "$location" != *$'\r'* ]] ||
         error 'The directory path must be a nonempty single line.'
-    location=$(resolve_path "$location") || return 1
+    location=$(resolve_path "$location") || return $?
     [[ ! -e "$location" || -d "$location" ]] || error 'Please choose a directory.'
-
-    printf '\nEnter the name for your jrnl-file:\n' >&2
-    filename=$(clack_select 'Filename' 1 journal.md jrnl.md devlog.md Other) || error 'Setup cancelled.'
-    if [[ "$filename" == Other ]]; then
-        # choose_journal_path runs in a subshell; completion uses the chosen folder.
-        if [[ -d "$location" ]]; then cd -- "$location" || error "Cannot access directory: $location"; fi
-        printf 'Filename: ' >&2
-        IFS= read -e -r filename || error 'Setup cancelled: no filename received.'
-    fi
-    journal_path "$location" "$filename"
+    printf '%s\n' "$location"
 }
 
 journal_path() {
     local location=$1 filename=$2 chosen
+    # Trim surrounding input whitespace while keeping spaces within the name.
+    filename=${filename#"${filename%%[![:space:]]*}"}
+    filename=${filename%"${filename##*[![:space:]]}"}
     [[ "$filename" == *[![:space:]]* && "$filename" != */* &&
        "$filename" != . && "$filename" != .. && "$filename" != '~' &&
        "$filename" != *$'\n'* && "$filename" != *$'\r'* ]] ||
         error 'Please enter a filename without a directory path.'
     # Check before and after normalization, including symlinks to directories.
     [[ ! -d "$location/$filename" ]] || error 'The filename resolves to a directory.'
-    case "$filename" in *.[mM][dD]) ;; *) filename=$filename.md ;; esac
-    chosen=$(resolve_path "${location%/}/$filename") || return 1
+    # Keep any existing suffix, ignoring a leading dot in a hidden filename.
+    case "$filename" in ?*.?*) ;; *) filename=$filename.md ;; esac
+    chosen=$(resolve_path "${location%/}/$filename") || return $?
     [[ ! -d "$chosen" ]] || error 'The filename resolves to a directory.'
     printf '%s\n' "$chosen"
 }

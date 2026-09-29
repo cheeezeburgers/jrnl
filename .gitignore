@@ -24,6 +24,7 @@ TODO*.md
 AGENTS*.md
 CODEX*.md
 DEVLOG.md
+!development/DEVLOG.md
 
 # Secrets / local environment
 .env
