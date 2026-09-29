@@ -11,7 +11,7 @@ Write down what you just fixed, broke, investigated or want to remember, without
 `jrnl` saves it to a Markdown file with the current date and time.
 
 > [!NOTE]
-> __Version 0.2.2a__ — Tested on macOS with Bash 3.2 and zsh. Linux validation is planned for a later version.
+> __Version 0.2.3__ — Tested on macOS with Bash 3.2 and zsh. Linux validation is planned for a later version.
 
 ## Install
 
