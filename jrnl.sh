@@ -3,7 +3,7 @@
 # jrnl: installed command
 set -euo pipefail
 
-VERSION=0.2.2a
+VERSION=0.2.3a
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 SCRIPT_FILE=$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")
 INSTALLED_COMMAND=$HOME/.local/bin/jrnl

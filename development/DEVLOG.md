@@ -1,5 +1,14 @@
 # Development log
 
+## 2026-09-29 — 0.2.3a
+
+Branch: `feature/make-release`.
+
+- Add a thin root Makefile: `make install` delegates to the canonical `./install.sh`; `make tag` and `make release` call a shared Bash maintainer helper. Commit changes before tagging; release requires the current annotated tag at HEAD.
+- Read the canonical version via `jrnl.sh --version`; refuse dirty trees, unfinished Git operations, duplicate local tags, conflicting remote tags and existing GitHub releases (including drafts). Validate GitHub CLI, authentication, repository access and write permission before pushing only the explicit version tag to origin's sole push URL. Create releases with a versioned title and generated notes; failed publication leaves the pushed tag available for inspection/retry.
+- Validate with `python3 development/tests/test_release.py` (16 passing tests using disposable repositories, real local Git transport and a mocked GitHub CLI), plus five existing installer/version regressions. Bash syntax, ShellCheck (`-x`), Make dry-run and whitespace checks pass on macOS Bash 3.2. Cover single-tag pushes with follow-tags enabled, matching/conflicting remote tags, existing releases, missing prerequisites, authentication/API/transport failures and retained tags after publication failure. Live GitHub publication and Linux execution were not tested.
+- Version bumped once from 0.2.2a to 0.2.3a. Preserve README and standalone installation instructions as required. No project tags, commits or pushes were made.
+
 ## 2026-09-29 — 0.2.2a
 
 Branch: `codex/fix-setup-retries`.

@@ -33,6 +33,15 @@ Clone the repo, then run:
 source "${ZDOTDIR:-$HOME}/.zshrc"
 ```
 
+> [!NOTE]
+> If you use `make`, installation can also be started with:
+> 
+> ```sh
+> make install
+> ```
+> 
+> This is only a convenience wrapper around `./install.sh`.
+
 The installer copies everything `jrnl` needs to stable user-local locations:
 
 ```text
@@ -45,7 +54,7 @@ The setup selector is vendored with `jrnl`, so there is no separate UI dependenc
 
 ### Update
 
-To update later, run `./install.sh` again from a newer checkout.
+To update later, run `./install.sh` (or `make install`) again from a newer checkout.
 
 ## Setup
 
@@ -248,6 +257,19 @@ rm -- "$HOME/.local/share/jrnl/clack-select.sh"
 ```
 
 Your journal and `.zshrc.jrnl.bak` are left untouched.
+
+## Release
+
+For maintainers, the Makefile keeps tagging and releases short:
+
+```sh
+make tag
+make release
+```
+
+`make tag` creates an annotated local tag from the current project version.
+
+`make release` verifies that tag, pushes only that version tag to `origin`, then creates the matching GitHub release with generated notes using `gh`.
 
 ## Development
 
