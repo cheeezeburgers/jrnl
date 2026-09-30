@@ -13,6 +13,23 @@ Write down what you just fixed, broke, investigated or want to remember, without
 > [!NOTE]
 > __Version 0.2.3__ — Tested on macOS with Bash 3.2 and zsh. Linux validation is planned for a later version.
 
+---
+
++ [Install](#install)
+	+ [Dry-run](#dry-run)
+	+ [Installation](#installation)
+	+ [Update](#update)
++ [Setup](#setup)
++ [Use](#use)
++ [Commands](#commands)
++ [Configuration](#configuration)
++ [Other shells](#other-shells)
++ [Local by design](#local-by-design)
++ [Why?!](#why)
++ [Uninstall](#uninstall)
++ [Release](#release)
++ [Development](#development)
+
 ## Install
 
 ### Dry-run
