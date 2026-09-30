@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Maintainer commands behind make tag/release; installation stays in install.sh.
+# Maintainer commands behind make tag/push-tag/release; installation stays in install.sh.
 set -Eeuo pipefail
 
 fail() { printf '[ X ] %s\n' "$*" >&2; exit 1; }
-(( $# == 1 )) && [[ $1 == tag || $1 == release ]] || fail 'Usage: bash development/release.sh tag|release'
+(( $# == 1 )) && [[ $1 == tag || $1 == push-tag || $1 == release ]] || fail 'Usage: bash development/release.sh tag|push-tag|release'
 action=$1
 command -v git >/dev/null 2>&1 || fail 'git is required.'
 if [[ $action == release ]]; then
@@ -34,7 +34,7 @@ if [[ $action == tag ]]; then
     exit 0
 fi
 
-# Release only an existing annotated tag made for this exact commit.
+# Publish only an existing annotated tag made for this exact commit.
 [[ $(git cat-file -t "$ref" 2>/dev/null) == tag ]] || fail "Annotated tag $tag is required; run make tag first."
 [[ $(git rev-parse "$ref^{commit}") == "$head" ]] || fail "Tag $tag does not point to HEAD."
 tag_object=$(git rev-parse "$ref")
@@ -43,6 +43,34 @@ tag_object=$(git rev-parse "$ref")
 # gh's default repository. Refuse ambiguous multi-destination push settings.
 remote=$(git remote get-url --push --all origin) || fail 'An origin push URL is required.'
 [[ -n $remote && $remote != *$'\n'* ]] || fail 'origin must have exactly one push URL.'
+
+publish_tag() {
+    local remote_tags object name remote_object='' remote_commit=''
+    remote_tags=$(git ls-remote --tags -- "$remote" "$ref" "$ref^{}") || fail 'Cannot check remote tags; nothing pushed.'
+    while read -r object name; do
+        [[ -n $object ]] || continue
+        case "$name" in
+            "$ref") remote_object=$object ;;
+            "$ref^{}") remote_commit=$object ;;
+        esac
+    done <<< "$remote_tags"
+    if [[ -n $remote_object || -n $remote_commit ]]; then
+        [[ $remote_object == "$tag_object" ]] || fail "Remote tag $tag differs from the local tag."
+        [[ $remote_commit == "$head" ]] || fail "Remote tag $tag does not point to HEAD."
+        printf '[ OK ] Tag %s already matches origin. Nothing pushed.\n' "$tag"
+        return
+    fi
+
+    # Explicit refspec and disabled follow-tags/mirroring prevent unrelated pushes.
+    git push --no-follow-tags --no-mirror --recurse-submodules=no -- "$remote" "$ref:$ref" || fail 'Tag push failed; release was not created.'
+    printf '[ OK ] Published tag %s to origin.\n' "$tag"
+}
+
+if [[ $action == push-tag ]]; then
+    publish_tag
+    exit 0
+fi
+
 case "$remote" in
     https://*) repository=${remote#https://} ;;
     git@*:*) repository=${remote#git@}; repository=${repository/:/\/} ;;
@@ -61,16 +89,6 @@ permission=$(gh api --hostname "$host" "repos/$repo" --jq '.permissions.push') |
 existing=$(gh api --hostname "$host" --paginate "repos/$repo/releases?per_page=100" \
     --jq ".[] | select(.tag_name == \"$tag\") | .tag_name") || fail 'Cannot check existing releases; nothing pushed.'
 [[ -z $existing ]] || fail "GitHub release $tag already exists; it will not be replaced."
-remote_tags=$(git ls-remote --tags "$remote" "$ref" "$ref^{}") || fail 'Cannot check remote tags; nothing pushed.'
-while read -r object name; do
-    [[ -n $object ]] || continue
-    case "$name" in
-        "$ref") [[ $object == "$tag_object" ]] || fail "Remote tag $tag differs from the local tag." ;;
-        "$ref^{}") [[ $object == "$head" ]] || fail "Remote tag $tag does not point to HEAD." ;;
-    esac
-done <<< "$remote_tags"
-
-# Explicit refspec and disabled follow-tags/mirroring prevent unrelated pushes.
-git push --no-follow-tags --no-mirror --recurse-submodules=no "$remote" "$ref:$ref" || fail 'Tag push failed; release was not created.'
+publish_tag
 gh release create "$tag" --repo "$repository" --verify-tag \
     --title "jrnl $tag" --generate-notes || fail "Release creation failed. Tag $tag remains on origin; inspect GitHub before retrying."

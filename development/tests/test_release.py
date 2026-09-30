@@ -146,6 +146,12 @@ def log(tool, args):
         self.snapshot(parent=self.git("rev-parse", "HEAD"))
         self.make("tag")
         self.assertEqual(self.git("cat-file", "-t", "refs/tags/v7.8.9b"), "tag")
+        self.make("push-tag")
+        self.assertEqual(self.git("--git-dir", str(self.remote), "rev-parse", "refs/tags/v7.8.9b"),
+                         self.git("rev-parse", "refs/tags/v7.8.9b"))
+        self.make("release")
+        create = next(c for c in self.calls() if c[:3] == ["gh", "release", "create"])
+        self.assertEqual(create[3], "v7.8.9b")
 
     def test_dirty_staged_and_untracked_trees_fail(self):
         path = self.repo / "jrnl.sh"
@@ -164,16 +170,53 @@ def log(tool, args):
         (self.repo / ".git/MERGE_HEAD").write_text(self.git("rev-parse", "HEAD") + "\n")
         self.assertIn("in-progress", self.make("tag", ok=False))
 
-    def test_release_requires_annotated_tag_at_head(self):
-        self.assertIn("make tag", self.make("release", ok=False))
+    def test_publish_requires_annotated_tag_at_head(self):
+        for target in ("push-tag", "release"):
+            self.assertIn("make tag", self.make(target, ok=False))
         self.git("update-ref", f"refs/tags/{TAG}", self.git("rev-parse", "HEAD"))
-        self.assertIn("Annotated tag", self.make("release", ok=False))
+        for target in ("push-tag", "release"):
+            self.assertIn("Annotated tag", self.make(target, ok=False))
         self.git("update-ref", "-d", f"refs/tags/{TAG}")
         self.make("tag")
         (self.repo / "new-file").touch()
         self.snapshot(parent=self.git("rev-parse", "HEAD"))
-        self.assertIn("does not point to HEAD", self.make("release", ok=False))
+        for target in ("push-tag", "release"):
+            self.assertIn("does not point to HEAD", self.make(target, ok=False))
         self.assert_no_publish()
+
+    def test_push_tag_only_publishes_exact_tag_without_gh(self):
+        (self.bin / "gh").unlink()
+        self.make("tag")
+        tag_data = self.git("cat-file", "tag", TAG).replace(f"tag {TAG}\n", "tag unrelated\n")
+        extra = self.git("hash-object", "-t", "tag", "-w", "--stdin", input=tag_data)
+        self.git("update-ref", "refs/tags/unrelated", extra)
+        self.git("config", "push.followTags", "true")
+        self.git("config", "remote.origin.mirror", "true")
+        self.git("config", "remote.origin.push", "refs/heads/*:refs/heads/*")
+        # Query and push the sole push URL, even when it differs from the fetch URL.
+        self.git("config", "remote.origin.pushurl", str(self.remote))
+        self.make("push-tag")
+        self.assertEqual(self.git("--git-dir", str(self.remote), "for-each-ref", "--format=%(refname)"),
+                         f"refs/tags/{TAG}")
+        self.assertEqual(self.git("--git-dir", str(self.remote), "rev-parse", f"refs/tags/{TAG}"),
+                         self.git("rev-parse", f"refs/tags/{TAG}"))
+        self.assertIn("already matches origin", self.make("push-tag"))
+        pushes = [c for c in self.calls() if c[:2] == ["git", "push"]]
+        self.assertEqual(pushes, [["git", "push", "--no-follow-tags", "--no-mirror",
+                                  "--recurse-submodules=no", "--", str(self.remote),
+                                  f"refs/tags/{TAG}:refs/tags/{TAG}"]])
+        self.assertTrue(all(c[-3:] == [str(self.remote), f"refs/tags/{TAG}", f"refs/tags/{TAG}^{{}}"]
+                            for c in self.calls() if c[:2] == ["git", "ls-remote"]))
+        self.assertFalse(any(c[0] == "gh" for c in self.calls()))
+
+    def test_release_reuses_tag_published_by_push_tag(self):
+        self.make("tag")
+        self.make("push-tag")
+        self.assertFalse(any(c[0] == "gh" for c in self.calls()))
+        self.log.unlink()
+        self.assertIn("already matches origin", self.make("release"))
+        self.assertFalse(any(c[:2] == ["git", "push"] for c in self.calls()))
+        self.assertTrue(any(c[:3] == ["gh", "release", "create"] for c in self.calls()))
 
     def test_release_pushes_only_version_tag_and_generates_notes(self):
         self.make("tag")
@@ -192,6 +235,7 @@ def log(tool, args):
         self.assertEqual(create[create.index("--repo") + 1], "github.com/example/jrnl")
         # A matching remote tag is safe to reuse after a publication failure.
         self.make("release")
+        self.assertEqual(sum(c[:2] == ["git", "push"] for c in self.calls()), 1)
 
     def test_existing_release_fails_before_push(self):
         self.make("tag")
@@ -216,11 +260,13 @@ def log(tool, args):
     def test_missing_or_ambiguous_origin_fails(self):
         self.make("tag")
         self.git("remote", "remove", "origin")
-        self.assertIn("origin push URL", self.make("release", ok=False))
+        for target in ("push-tag", "release"):
+            self.assertIn("origin push URL", self.make(target, ok=False))
         self.git("remote", "add", "origin", URL)
         self.git("config", "--add", "remote.origin.pushurl", URL)
         self.git("config", "--add", "remote.origin.pushurl", "git@github.com:other/repo.git")
-        self.assertIn("exactly one", self.make("release", ok=False))
+        for target in ("push-tag", "release"):
+            self.assertIn("exactly one", self.make(target, ok=False))
         self.assert_no_publish()
 
     def test_ssh_push_destination_is_used_for_gh(self):
@@ -238,19 +284,23 @@ def log(tool, args):
         self.git("--git-dir", str(self.remote), "fetch", "-q", str(self.repo), "HEAD")
         self.git("--git-dir", str(self.remote), "hash-object", "-t", "tag", "-w", "--stdin", input=tag_data)
         self.git("--git-dir", str(self.remote), "update-ref", f"refs/tags/{TAG}", obj)
-        self.assertIn("differs", self.make("release", ok=False))
+        for target in ("push-tag", "release"):
+            self.assertIn("differs", self.make(target, ok=False))
+        self.assertEqual(self.git("--git-dir", str(self.remote), "rev-parse", f"refs/tags/{TAG}"), obj)
         self.assert_no_publish()
 
     def test_remote_read_failure_does_not_push(self):
         self.make("tag")
         self.env["TEST_GIT_FAIL"] = "ls-remote"
-        self.assertIn("Cannot check remote tags", self.make("release", ok=False))
+        for target in ("push-tag", "release"):
+            self.assertIn("Cannot check remote tags", self.make(target, ok=False))
         self.assert_no_publish()
 
     def test_push_failure_does_not_create_release(self):
         self.make("tag")
         self.env["TEST_GIT_FAIL"] = "push"
-        self.assertIn("Tag push failed", self.make("release", ok=False))
+        for target in ("push-tag", "release"):
+            self.assertIn("Tag push failed", self.make(target, ok=False))
         self.assertFalse(any(c[:3] == ["gh", "release", "create"] for c in self.calls()))
 
     def test_create_failure_preserves_tag(self):

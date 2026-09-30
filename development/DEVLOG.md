@@ -1,5 +1,14 @@
 # Development log
 
+## 2026-09-30 — 0.2.4
+
+Branch: `feature/push-tag`.
+
+- Add `make push-tag` as a thin call to `development/release.sh`. Reuse the canonical version, clean-tree checks, annotated local tag at HEAD and sole origin push destination. This operation needs Git only and never invokes GitHub CLI.
+- Share remote tag verification and publication with `make release`: compare both the annotated tag object and peeled commit, skip an already matching remote tag, reject conflicts or read failures, and push only the explicit version tag with follow-tags and mirroring disabled. Release retains its GitHub preflight and creates the release after either publishing or reusing the tag.
+- Validate 18 release integration tests with disposable local Git repositories and mocked GitHub CLI, plus five existing version/installer regressions. Cover missing `gh`, overridden push destinations/settings, idempotent publication, release after push-tag, conflicts and transport failures. Bash syntax, ShellCheck, Make dry-run and whitespace checks pass on macOS; live GitHub publication and Linux execution were not tested.
+- Bump the canonical version once from 0.2.3 to 0.2.4. No project tags, commits or pushes were made.
+
 ## 2026-09-29 — 0.2.3a
 
 Branch: `feature/make-release`.
