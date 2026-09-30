@@ -238,6 +238,20 @@ Writes use a temporary file followed by atomic replacement to avoid leaving a ha
 
 A small PID-based lock prevents two processes from writing the same file at once and can recover locks left behind by dead processes.
 
+## Why?!
+
+Why write 1000+ lines of code for something that basically works in a single line:
+
+```sh
+alias log='echo >> ~/devlog.md'
+```
+
+Because this slowly escalated into wanting timestamps, Markdown and shell-literal input.
+
+Also, I started using this project to practice implementing setup menus, safe writes, locking, testing, Makefiles, npm packaging and release workflows, while simultaneously documenting everything... with `jrnl`.
+
+Future escalations likely: search your jrnl with `jrnl -s <word>`, and: *"Wouldn't it be cool if I could pipe `| jrnl` any output directly into my jrnl?"* Because: why not 🐶 ☕ 🔥
+
 ## Uninstall
 
 Remove the managed `jrnl` block from `.zshrc`:
